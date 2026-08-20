@@ -36,8 +36,7 @@
       "/api/*",
       "/mcp/*",
       "/internal/*",
-      "/t/*",
-      "/oauth/*"
+      "/t/*"
     ]
   },
   "observability": {
@@ -45,5 +44,27 @@
   },
   "vars": {
     "PUBLIC_BASE_URL": "http://localhost:8787"
+  },
+  "env": {
+    "production": {
+      "workers_dev": false,
+      "routes": [
+        {
+          "pattern": "__OPENOUTREACH_HOSTNAME__",
+          "custom_domain": true
+        }
+      ],
+      "vars": {
+        "PUBLIC_BASE_URL": "https://__OPENOUTREACH_HOSTNAME__"
+      },
+      "containers": [
+        {
+          "class_name": "OutreachContainer",
+          "image": "registry.cloudflare.com/__CLOUDFLARE_ACCOUNT_ID__/outreachd:__IMAGE_TAG__",
+          "max_instances": 1,
+          "instance_type": "basic"
+        }
+      ]
+    }
   }
 }

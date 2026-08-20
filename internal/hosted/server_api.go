@@ -740,8 +740,17 @@ func (s *Server) handleValidateLeads(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListLeads(w http.ResponseWriter, r *http.Request) {
 	domain := r.URL.Query().Get("domain")
 	status := r.URL.Query().Get("status")
+	search := r.URL.Query().Get("q")
+	if search == "" {
+		search = r.URL.Query().Get("search")
+	}
 	limit := 100
-	leads, err := internal.ListLeads(s.Store.DB, domain, status, limit)
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	leads, err := internal.ListLeads(s.Store.DB, domain, status, search, limit)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return

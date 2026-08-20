@@ -1,4 +1,5 @@
 import { Container, getContainer } from "@cloudflare/containers";
+import { verifyAccessJwt } from "./access";
 import { handleMcp } from "./mcp";
 
 /** Transparent 1x1 GIF */
@@ -9,10 +10,9 @@ export interface Env {
   OUTREACH: DurableObjectNamespace<OutreachContainer>;
   ASSETS: Fetcher;
   INTERNAL_CONTAINER_TOKEN?: string;
-  TRACKING_HMAC_SECRET?: string;
   MCP_BEARER_TOKEN?: string;
   PUBLIC_BASE_URL?: string;
-  /** When set, require Access JWT assertion or MCP bearer (except public paths). */
+  /** When set, require verified Access JWT or MCP bearer (except public paths). */
   CF_ACCESS_AUD?: string;
   DATABASE_URL?: string;
   GOOGLE_CLIENT_ID?: string;
@@ -52,7 +52,6 @@ export class OutreachContainer extends Container<Env> {
       ["CREDENTIAL_ENCRYPTION_KEY", "CREDENTIAL_ENCRYPTION_KEY"],
       ["INTERNAL_CONTAINER_TOKEN", "INTERNAL_CONTAINER_TOKEN"],
       ["PUBLIC_BASE_URL", "PUBLIC_BASE_URL"],
-      ["TRACKING_HMAC_SECRET", "TRACKING_HMAC_SECRET"],
       ["GOOGLE_REDIRECT_URL", "GOOGLE_REDIRECT_URL"],
       ["OPENOUTREACH_WORKSPACE_ID", "OPENOUTREACH_WORKSPACE_ID"],
     ];
@@ -90,20 +89,24 @@ function containerStub(env: Env) {
 function isPublicPath(pathname: string): boolean {
   return (
     pathname.startsWith("/t/") ||
-    pathname === "/oauth/google/callback" ||
-    pathname.startsWith("/oauth/google/") ||
     pathname.startsWith("/api/v1/accounts/google/oauth/callback")
   );
 }
 
+function unauthorized(): Response {
+  return new Response(JSON.stringify({ error: { code: "unauthorized", message: "Access required" } }), {
+    status: 401,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 /**
- * Access-compatible gate: when CF_ACCESS_AUD is configured, require either
- * Cf-Access-Jwt-Assertion (edge Access) or MCP bearer for /mcp.
- * Tracking + OAuth callback stay public.
+ * Access gate: when CF_ACCESS_AUD is configured, require a verified Access JWT,
+ * MCP bearer for /mcp, or internal token for /internal. Tracking + OAuth callback stay public.
  */
-function accessGate(request: Request, env: Env, pathname: string): Response | null {
+async function accessGate(request: Request, env: Env, pathname: string): Promise<Response | null> {
   if (!env.CF_ACCESS_AUD || isPublicPath(pathname)) return null;
-  if (request.headers.get("Cf-Access-Jwt-Assertion")) return null;
+
   if (pathname.startsWith("/mcp") && env.MCP_BEARER_TOKEN) {
     const auth = request.headers.get("Authorization") || "";
     if (auth === `Bearer ${env.MCP_BEARER_TOKEN}`) return null;
@@ -111,10 +114,11 @@ function accessGate(request: Request, env: Env, pathname: string): Response | nu
   if (pathname.startsWith("/internal/") && env.INTERNAL_CONTAINER_TOKEN) {
     if (request.headers.get("X-Internal-Token") === env.INTERNAL_CONTAINER_TOKEN) return null;
   }
-  return new Response(JSON.stringify({ error: { code: "unauthorized", message: "Access required" } }), {
-    status: 401,
-    headers: { "Content-Type": "application/json" },
-  });
+
+  const jwt = request.headers.get("Cf-Access-Jwt-Assertion");
+  if (jwt && (await verifyAccessJwt(jwt, env.CF_ACCESS_AUD))) return null;
+
+  return unauthorized();
 }
 
 async function proxyToContainer(
@@ -209,7 +213,7 @@ export default {
     const url = new URL(request.url);
     const { pathname } = url;
 
-    const denied = accessGate(request, env, pathname);
+    const denied = await accessGate(request, env, pathname);
     if (denied) return denied;
 
     const openMatch = pathname.match(/^\/t\/o\/([^/]+?)(?:\.gif)?$/);
@@ -234,12 +238,7 @@ export default {
       return handleMcp(request, env, getContainer as never);
     }
 
-    if (
-      pathname.startsWith("/api/") ||
-      pathname.startsWith("/internal/") ||
-      pathname === "/oauth/google/callback" ||
-      pathname.startsWith("/oauth/google/")
-    ) {
+    if (pathname.startsWith("/api/") || pathname.startsWith("/internal/")) {
       return proxyToContainer(request, env);
     }
 

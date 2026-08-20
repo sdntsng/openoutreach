@@ -207,8 +207,8 @@ type LeadListRow struct {
 	Campaigns    int    `json:"campaigns"`
 }
 
-// ListLeads returns leads, optionally filtered by domain or status.
-func ListLeads(db *sql.DB, domain, status string, limit int) ([]LeadListRow, error) {
+// ListLeads returns leads, optionally filtered by domain, status, or search text.
+func ListLeads(db *sql.DB, domain, status, search string, limit int) ([]LeadListRow, error) {
 	query := `
 		SELECT l.id, l.email, l.first_name, l.company, l.domain, l.global_status,
 			(SELECT COUNT(*) FROM campaign_leads WHERE lead_id = l.id) as campaigns
@@ -223,6 +223,11 @@ func ListLeads(db *sql.DB, domain, status string, limit int) ([]LeadListRow, err
 	if status != "" {
 		query += " AND l.global_status = ?"
 		args = append(args, status)
+	}
+	if search != "" {
+		pattern := "%" + strings.ToLower(strings.TrimSpace(search)) + "%"
+		query += " AND (LOWER(l.email) LIKE ? OR LOWER(l.first_name) LIKE ? OR LOWER(l.company) LIKE ? OR LOWER(l.domain) LIKE ?)"
+		args = append(args, pattern, pattern, pattern, pattern)
 	}
 	query += " ORDER BY l.id DESC LIMIT ?"
 	args = append(args, limit)

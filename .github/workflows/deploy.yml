@@ -1,0 +1,61 @@
+name: deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            worker/package-lock.json
+
+      - name: Build dashboard
+        working-directory: web
+        run: npm ci || npm install && npm run build
+
+      - name: Install worker dependencies
+        working-directory: worker
+        run: npm install --legacy-peer-deps
+
+      - name: Prepare production wrangler config
+        working-directory: worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          OPENOUTREACH_HOSTNAME: ${{ vars.OPENOUTREACH_HOSTNAME }}
+        run: |
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "CLOUDFLARE_ACCOUNT_ID secret is required"
+            exit 1
+          fi
+          if [ -z "$OPENOUTREACH_HOSTNAME" ]; then
+            echo "OPENOUTREACH_HOSTNAME repo variable is required (e.g. outreach.example.com)"
+            exit 1
+          fi
+          TAG="${GITHUB_SHA:0:12}"
+          sed -i "s|__OPENOUTREACH_HOSTNAME__|${OPENOUTREACH_HOSTNAME}|g" wrangler.jsonc
+          sed -i "s|__CLOUDFLARE_ACCOUNT_ID__|${CLOUDFLARE_ACCOUNT_ID}|g" wrangler.jsonc
+          sed -i "s|__IMAGE_TAG__|${TAG}|g" wrangler.jsonc
+
+      - name: Build and push container image
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler containers build -p -t "outreachd:${GITHUB_SHA:0:12}" ..
+
+      - name: Deploy Worker (production)
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy --env production

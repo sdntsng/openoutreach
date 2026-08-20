@@ -101,30 +101,6 @@ const TOOLS: ToolDef[] = [
     }),
   },
   {
-    name: "outreach_update_campaign",
-    description: "Update a draft or paused campaign. Does not activate or send.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        campaign_id: { type: "string" },
-        name: { type: "string" },
-        sequence_yaml: { type: "string" },
-        account_ids: { type: "array", items: { type: "string" } },
-        open_tracking_enabled: { type: "boolean" },
-      },
-      required: ["campaign_id"],
-      additionalProperties: false,
-    },
-    call: (a) => {
-      const { campaign_id, ...body } = a;
-      return {
-        method: "PATCH",
-        path: `/api/v1/campaigns/${enc(campaign_id)}`,
-        body,
-      };
-    },
-  },
-  {
     name: "outreach_preview_campaign",
     description:
       "Preview schedule and rendered sample messages for a campaign. Does not send.",
@@ -312,16 +288,19 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: "outreach_get_thread",
-    description: "Get one email thread with messages.",
+    description: "Get one email thread with messages for a campaign lead.",
     inputSchema: {
       type: "object",
-      properties: { thread_id: { type: "string" } },
-      required: ["thread_id"],
+      properties: {
+        campaign_id: { type: "string" },
+        lead_id: { type: "string" },
+      },
+      required: ["campaign_id", "lead_id"],
       additionalProperties: false,
     },
     call: (a) => ({
       method: "GET",
-      path: `/api/v1/threads/${enc(a.thread_id)}`,
+      path: `/api/v1/threads/${enc(a.campaign_id)}/${enc(a.lead_id)}`,
     }),
   },
   {
@@ -331,16 +310,17 @@ const TOOLS: ToolDef[] = [
     inputSchema: {
       type: "object",
       properties: {
-        thread_id: { type: "string" },
+        campaign_id: { type: "string" },
+        lead_id: { type: "string" },
         body: { type: "string" },
         subject: { type: "string" },
       },
-      required: ["thread_id", "body"],
+      required: ["campaign_id", "lead_id", "body"],
       additionalProperties: false,
     },
     call: (a) => ({
       method: "POST",
-      path: `/api/v1/threads/${enc(a.thread_id)}/reply`,
+      path: `/api/v1/threads/${enc(a.campaign_id)}/${enc(a.lead_id)}/reply`,
       body: { body: a.body, subject: a.subject },
     }),
   },
@@ -357,7 +337,8 @@ const TOOLS: ToolDef[] = [
       additionalProperties: false,
     },
     call: (a) => {
-      const params = new URLSearchParams({ q: String(a.q) });
+      const params = new URLSearchParams();
+      if (a.q) params.set("q", String(a.q));
       if (a.limit != null) params.set("limit", String(a.limit));
       return { method: "GET", path: `/api/v1/leads?${params}` };
     },
@@ -365,27 +346,23 @@ const TOOLS: ToolDef[] = [
   {
     name: "outreach_blacklist_lead",
     description:
-      "Globally blacklist a lead (or domain) and cancel pending sends. Consequential suppression.",
+      "Globally blacklist a lead by id or email and cancel pending sends. Consequential suppression.",
     inputSchema: {
       type: "object",
       properties: {
         lead_id: { type: "string" },
         email: { type: "string" },
-        domain: { type: "string" },
       },
       additionalProperties: false,
     },
     call: (a) => {
-      if (a.lead_id) {
-        return {
-          method: "POST",
-          path: `/api/v1/leads/${enc(a.lead_id)}/blacklist`,
-        };
+      const target = a.lead_id || a.email;
+      if (!target) {
+        throw new Error("lead_id or email is required");
       }
       return {
         method: "POST",
-        path: "/api/v1/leads/blacklist",
-        body: { email: a.email, domain: a.domain },
+        path: `/api/v1/leads/${enc(target)}/blacklist`,
       };
     },
   },

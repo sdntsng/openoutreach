@@ -828,7 +828,7 @@ var leadListCmd = &cobra.Command{
 		status, _ := cmd.Flags().GetString("status")
 		limit, _ := cmd.Flags().GetInt("limit")
 
-		leads, err := internal.ListLeads(db, domain, status, limit)
+		leads, err := internal.ListLeads(db, domain, status, "", limit)
 		if err != nil {
 			return err
 		}

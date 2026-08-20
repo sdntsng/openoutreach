@@ -43,4 +43,9 @@ Cloudflare Container (outreachd :8080)
 
 ## Auth
 
-Cloudflare Access on dashboard/API/MCP. Tracking + OAuth callback public. Internal tick token for Worker→Container.
+Cloudflare Access on dashboard/API/MCP. Tracking + OAuth callback public. Internal tick token for Worker→Container. Worker verifies Access JWT signature when `CF_ACCESS_AUD` is set.
+
+## Tracking
+
+- **Open tracking:** optional per campaign; Worker serves `/t/o/{token}` pixel, records via container internal API. Label UI as **Approx. opens**.
+- **Click tracking:** Worker route and record handler exist (`/t/c/*`), but link rewriting at send time is not wired in V1 — clicks are not tracked in outbound emails yet.
