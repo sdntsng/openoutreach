@@ -1,0 +1,137 @@
+package internal
+
+import "time"
+
+const (
+	AccountProviderGWS      = "gws"
+	AccountProviderSMTPIMAP = "smtp_imap"
+
+	CampaignStatusCompletedWithFailures = "completed_with_failures"
+)
+
+type Account struct {
+	ID              int64      `json:"id"`
+	WorkspaceID     string     `json:"workspace_id"`
+	Email           string     `json:"email"`
+	DailyLimit      int        `json:"daily_limit"`
+	LastSendAt      *time.Time `json:"last_send_at,omitempty"`
+	Status          string     `json:"status"`
+	Provider        string     `json:"provider"`
+	GWSConfigDir    string     `json:"gws_config_dir,omitempty"`
+	SMTPHost        string     `json:"smtp_host,omitempty"`
+	SMTPPort        int        `json:"smtp_port,omitempty"`
+	SMTPUsername    string     `json:"smtp_username,omitempty"`
+	SMTPPasswordRef string     `json:"smtp_password_ref,omitempty"`
+	SMTPTLSMode     string     `json:"smtp_tls_mode,omitempty"`
+	IMAPHost        string     `json:"imap_host,omitempty"`
+	IMAPPort        int        `json:"imap_port,omitempty"`
+	IMAPUsername    string     `json:"imap_username,omitempty"`
+	IMAPPasswordRef string     `json:"imap_password_ref,omitempty"`
+	IMAPTLSMode     string     `json:"imap_tls_mode,omitempty"`
+}
+
+type Campaign struct {
+	ID                int64     `json:"id"`
+	WorkspaceID       string    `json:"workspace_id"`
+	Name              string    `json:"name"`
+	Status            string    `json:"status"`
+	SequenceFile      string    `json:"sequence_file"`
+	StopOnReply       bool      `json:"stop_on_reply"`
+	StopOnDomainReply bool      `json:"stop_on_domain_reply"`
+	SendWindowStart   string    `json:"send_window_start"`
+	SendWindowEnd     string    `json:"send_window_end"`
+	SendDays          string    `json:"send_days"`
+	Timezone          string    `json:"timezone"`
+	MinGapSeconds     int       `json:"min_gap_seconds"`
+	MaxGapSeconds     int       `json:"max_gap_seconds"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
+type Lead struct {
+	ID           int64     `json:"id"`
+	Email        string    `json:"email"`
+	FirstName    string    `json:"first_name"`
+	LastName     string    `json:"last_name"`
+	Company      string    `json:"company"`
+	Domain       string    `json:"domain"`
+	CustomFields string    `json:"custom_fields,omitempty"`
+	GlobalStatus string    `json:"global_status"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type CampaignLead struct {
+	CampaignID int64      `json:"campaign_id"`
+	LeadID     int64      `json:"lead_id"`
+	Status     string     `json:"status"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+}
+
+type ScheduledSend struct {
+	ID              int64      `json:"id"`
+	CampaignID      int64      `json:"campaign_id"`
+	LeadID          int64      `json:"lead_id"`
+	AccountID       int64      `json:"account_id"`
+	StepNumber      int        `json:"step_number"`
+	VariantIndex    int        `json:"variant_index"`
+	SendAt          time.Time  `json:"send_at"`
+	Status          string     `json:"status"`
+	ThreadID        string     `json:"thread_id,omitempty"`
+	ParentMessageID string     `json:"parent_message_id,omitempty"`
+	MessageID       string     `json:"message_id,omitempty"`
+	SentAt          *time.Time `json:"sent_at,omitempty"`
+	ErrorMessage    string     `json:"error_message,omitempty"`
+}
+
+type Event struct {
+	ID         int64     `json:"id"`
+	CampaignID int64     `json:"campaign_id"`
+	LeadID     int64     `json:"lead_id"`
+	AccountID  int64     `json:"account_id"`
+	Type       string    `json:"type"`
+	StepNumber int       `json:"step_number"`
+	MessageID  string    `json:"message_id"`
+	ThreadID   string    `json:"thread_id"`
+	Timestamp  time.Time `json:"timestamp"`
+	Metadata   string    `json:"metadata,omitempty"`
+}
+
+const (
+	EmailMessageDirectionOutbound = "outbound"
+	EmailMessageDirectionInbound  = "inbound"
+
+	EmailMessageTypeSent        = "sent"
+	EmailMessageTypeReply       = "reply"
+	EmailMessageTypeBounce      = "bounce"
+	EmailMessageTypeAutoReply   = "auto_reply"
+	EmailMessageTypeUnsubscribe = "unsubscribe"
+	EmailMessageTypeManualReply = "manual_reply"
+)
+
+type EmailMessage struct {
+	ID              int64     `json:"id"`
+	CampaignID      int64     `json:"campaign_id"`
+	LeadID          int64     `json:"lead_id"`
+	AccountID       int64     `json:"account_id"`
+	Direction       string    `json:"direction"`
+	Type            string    `json:"type"`
+	StepNumber      int       `json:"step_number"`
+	ScheduledSendID *int64    `json:"scheduled_send_id,omitempty"`
+	EventID         *int64    `json:"event_id,omitempty"`
+	MessageID       string    `json:"message_id"`
+	ThreadID        string    `json:"thread_id"`
+	InReplyTo       string    `json:"in_reply_to,omitempty"`
+	FromEmail       string    `json:"from_email"`
+	ToEmails        string    `json:"to_emails"`
+	CcEmails        string    `json:"cc_emails,omitempty"`
+	BccEmails       string    `json:"bcc_emails,omitempty"`
+	ReplyToEmails   string    `json:"reply_to_emails,omitempty"`
+	Subject         string    `json:"subject"`
+	TextBody        string    `json:"text_body"`
+	DisplayBody     string    `json:"display_body"`
+	DisplayHTML     string    `json:"display_html"`
+	HTMLBody        string    `json:"html_body"`
+	Snippet         string    `json:"snippet"`
+	RawHeaders      string    `json:"raw_headers,omitempty"`
+	OccurredAt      time.Time `json:"occurred_at"`
+	CreatedAt       time.Time `json:"created_at"`
+}

@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: OpenOutreach
+message: If you use OpenOutreach, please cite it as below.
+type: software
+authors:
+  - family-names: Singh
+    given-names: Siddhant
+    alias: sdntsng
+repository-code: https://github.com/sdntsng/openoutreach
+url: https://github.com/sdntsng/openoutreach
+abstract: >-
+  Self-hosted, agent-first cold email outreach platform built on cold-cli,
+  with hosted API, Gmail OAuth, Cloudflare Worker/Container, dashboard, and MCP.
+license: MIT
+keywords:
+  - cold-email
+  - outreach
+  - gmail
+  - mcp
+  - cloudflare
+  - golang
+  - self-hosted
+version: 0.1.0
+date-released: "2026-08-20"

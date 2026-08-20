@@ -1,0 +1,2701 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/mail"
+	"os"
+	"path/filepath"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"github.com/andersmyrmel/cold-cli/internal"
+	"github.com/spf13/cobra"
+)
+
+var jsonOutput bool
+var envFilePath string
+var workspaceFlag string
+
+func currentWorkspaceID() string {
+	if strings.TrimSpace(workspaceFlag) != "" {
+		return internal.NormalizeWorkspaceID(workspaceFlag)
+	}
+	return internal.WorkspaceIDFromEnv()
+}
+
+func openStore() (*internal.Store, error) {
+	if internal.CurrentDialect() == internal.DialectSQLite {
+		dbPath := internal.DBPath()
+		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			return nil, fmt.Errorf("cold-cli not initialized — run 'cold-cli init' first")
+		}
+	}
+	return internal.OpenStore()
+}
+
+func openDB() (*sql.DB, error) {
+	store, err := openStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.DB, nil
+}
+
+func printJSON(v any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+func configuredGWSClient(store *internal.Store) *internal.GWSCLI {
+	return internal.ConfiguredGWSClient(store.DB)
+}
+
+func configuredDiscordNotifierFromEnv() internal.DiscordNotifier {
+	if !envFlagEnabled("COLD_CLI_DISCORD_NOTIFY", true) {
+		return nil
+	}
+	webhookURL := strings.TrimSpace(os.Getenv("DISCORD_WEBHOOK_URL"))
+	if webhookURL == "" {
+		return nil
+	}
+	return internal.DiscordWebhookNotifier{
+		WebhookURL: webhookURL,
+		Username:   os.Getenv("DISCORD_WEBHOOK_USERNAME"),
+		AvatarURL:  os.Getenv("DISCORD_WEBHOOK_AVATAR_URL"),
+	}
+}
+
+func configuredDiscordProvidersFromEnv() []string {
+	raw := strings.TrimSpace(os.Getenv("COLD_CLI_DISCORD_PROVIDERS"))
+	if raw == "" {
+		return []string{internal.AccountProviderSMTPIMAP}
+	}
+	if strings.EqualFold(raw, "all") || raw == "*" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	providers := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			providers = append(providers, part)
+		}
+	}
+	return providers
+}
+
+func configuredDiscordOperationalWorkspacesFromEnv() []string {
+	raw := strings.TrimSpace(os.Getenv("COLD_CLI_DISCORD_WORKSPACES"))
+	if raw == "" {
+		return nil
+	}
+	if strings.EqualFold(raw, "all") || raw == "*" {
+		return []string{"*"}
+	}
+	parts := strings.Split(raw, ",")
+	workspaces := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			workspaces = append(workspaces, part)
+		}
+	}
+	return workspaces
+}
+
+func envFlagEnabled(key string, defaultValue bool) bool {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return defaultValue
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
+}
+
+func parseBackfillSince(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	if strings.HasSuffix(value, "d") {
+		daysRaw := strings.TrimSuffix(value, "d")
+		var days int
+		if _, err := fmt.Sscanf(daysRaw, "%d", &days); err != nil || days < 1 {
+			return time.Time{}, fmt.Errorf("--since duration must look like 30d")
+		}
+		return time.Now().UTC().AddDate(0, 0, -days), nil
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", value); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("--since must be YYYY-MM-DD, RFC3339, or a day duration like 30d")
+}
+
+var rootCmd = &cobra.Command{
+	Use:   "cold-cli",
+	Short: "Agent-first CLI cold email sequence engine",
+	Long: strings.TrimSpace(`
+Agent-first CLI cold email sequence engine.
+
+Storage backend:
+  - SQLite by default at ~/.cold-cli/data.db
+  - Postgres when COLD_CLI_DATABASE_URL is set
+
+Sending providers:
+  - Google Workspace/Gmail via gws
+  - Generic SMTP/IMAP via account add-smtp
+
+For Postgres worker deployments, use a direct connection string rather than a
+transaction-pooled/pooler URL because tick uses advisory locks.
+`),
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(envFilePath) == "" {
+			return nil
+		}
+		if err := internal.LoadEnvFile(envFilePath); err != nil {
+			return fmt.Errorf("loading --env-file: %w", err)
+		}
+		return nil
+	},
+}
+
+var initCmd = &cobra.Command{
+	Use:   "init",
+	Short: "Initialize cold-cli data directory, database, and config",
+	Long: strings.TrimSpace(`
+Initialize cold-cli data directory, config, and the active database backend.
+
+Backend selection:
+  - SQLite by default at ~/.cold-cli/data.db
+  - Postgres when COLD_CLI_DATABASE_URL is set
+
+gws is only required for Google Workspace/Gmail accounts. Generic SMTP/IMAP
+accounts do not require gws.
+`),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dataDir := internal.DataDir()
+
+		if err := internal.EnsureDataDir(); err != nil {
+			return fmt.Errorf("creating data directory: %w", err)
+		}
+
+		store, err := internal.OpenStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		configPath := internal.ConfigPath()
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			if err := internal.WriteDefaultConfig(configPath); err != nil {
+				return fmt.Errorf("writing config: %w", err)
+			}
+		}
+
+		gwsErr := internal.CheckGWSInstalled()
+
+		if jsonOutput {
+			result := map[string]any{
+				"data_dir": dataDir,
+				"database": store.DisplayTarget(),
+				"config":   configPath,
+				"gws_ok":   gwsErr == nil,
+			}
+			if gwsErr != nil {
+				result["gws_error"] = gwsErr.Error()
+			}
+			return printJSON(result)
+		}
+
+		fmt.Printf("Initialized cold-cli at %s\n", dataDir)
+		fmt.Printf("  database: %s\n", store.DisplayTarget())
+		fmt.Printf("  config:   %s\n", configPath)
+		if gwsErr != nil {
+			fmt.Printf("  gws:      not found (%s; only needed for Google Workspace accounts)\n", gwsErr)
+		} else {
+			fmt.Println("  gws:      ok (Google Workspace accounts)")
+		}
+		return nil
+	},
+}
+
+// --- doctor command ---
+
+var doctorCmd = &cobra.Command{
+	Use:   "doctor [domain...]",
+	Short: "Check domain DNS setup for email deliverability (MX, SPF, DKIM, DMARC)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var domains []string
+
+		if len(args) > 0 {
+			domains = args
+		} else {
+			// Auto-detect from accounts
+			db, err := openDB()
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+
+			seen := map[string]bool{}
+			accounts, err := internal.ListAccounts(db)
+			if err != nil {
+				return err
+			}
+			for _, a := range accounts {
+				parts := strings.SplitN(a.Email, "@", 2)
+				if len(parts) == 2 && !seen[parts[1]] {
+					seen[parts[1]] = true
+					domains = append(domains, parts[1])
+				}
+			}
+			if len(domains) == 0 {
+				return fmt.Errorf("no accounts found — specify a domain: cold-cli doctor example.com")
+			}
+		}
+
+		var allDiags []*internal.DomainDiagnostic
+		for _, domain := range domains {
+			diag, err := internal.CheckDomain(domain)
+			if err != nil {
+				return fmt.Errorf("checking %s: %w", domain, err)
+			}
+			allDiags = append(allDiags, diag)
+		}
+
+		if jsonOutput {
+			return printJSON(allDiags)
+		}
+
+		for i, diag := range allDiags {
+			if i > 0 {
+				fmt.Println()
+			}
+			fmt.Printf("Domain: %s\n", diag.Domain)
+			for _, c := range diag.Checks {
+				if c.Passed {
+					fmt.Printf("  ✓ %-6s %s\n", c.Name, c.Detail)
+				} else {
+					fmt.Printf("  ✗ %-6s %s\n", c.Name, c.Detail)
+				}
+			}
+			fmt.Printf("\n  Score: %d/%d\n", diag.Score, diag.MaxScore)
+			for _, c := range diag.Checks {
+				if !c.Passed && c.Fix != "" {
+					fmt.Printf("  Fix:   %s\n", c.Fix)
+				}
+			}
+		}
+		return nil
+	},
+}
+
+// --- account commands ---
+
+var accountCmd = &cobra.Command{
+	Use:   "account",
+	Short: "Manage sending accounts",
+	Long: strings.TrimSpace(`
+Manage sending accounts.
+
+Use account add for Google Workspace/Gmail accounts authenticated through gws.
+Use account add-smtp for generic SMTP/IMAP accounts. SMTP sends mail, while
+IMAP is used by tick to detect replies, unsubscribes, and bounces.
+`),
+}
+
+var accountAddCmd = &cobra.Command{
+	Use:   "add <email>",
+	Short: "Add a Google Workspace/Gmail sending account",
+	Long: strings.TrimSpace(`
+Add a Google Workspace/Gmail sending account.
+
+This command uses gws OAuth and stores a per-account gws config directory.
+For generic email hosts, use account add-smtp instead.
+`),
+	Example: strings.TrimSpace(`
+cold-cli account add sender@company.com
+cold-cli account add sender@company.com --no-login
+`),
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		email := strings.TrimSpace(args[0])
+		if _, err := mail.ParseAddress(email); err != nil {
+			return fmt.Errorf("invalid email address %q", email)
+		}
+
+		dailyLimit, _ := cmd.Flags().GetInt("daily-limit")
+		skipAuth, _ := cmd.Flags().GetBool("no-login")
+		if !skipAuth {
+			skipAuth, _ = cmd.Flags().GetBool("skip-auth")
+		}
+
+		configDir := internal.GWSConfigDirForAccount(email)
+
+		if !skipAuth {
+			fmt.Printf("Authenticating %s with gws...\n", email)
+			fmt.Println("A browser window will open for Google OAuth login.")
+			fmt.Println()
+			if err := internal.GWSAuthLogin(configDir); err != nil {
+				return fmt.Errorf("gws auth failed for %s: %w\nYou can retry with: cold-cli account add %s\nOr skip auth with: cold-cli account add %s --skip-auth", email, err, email, email)
+			}
+			fmt.Println()
+		}
+
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		workspaceID := currentWorkspaceID()
+		result, err := internal.AddAccountInWorkspace(db, workspaceID, email, dailyLimit, configDir)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Printf("Added account %s (id=%d, workspace=%s, daily_limit=%d)\n", result.Email, result.ID, result.WorkspaceID, result.DailyLimit)
+
+		// Auto-check domain deliverability
+		parts := strings.SplitN(email, "@", 2)
+		if len(parts) == 2 {
+			diag, err := internal.CheckDomain(parts[1])
+			if err == nil {
+				fmt.Println()
+				fmt.Printf("Domain check for %s: %d/%d\n", parts[1], diag.Score, diag.MaxScore)
+				for _, c := range diag.Checks {
+					if !c.Passed {
+						fmt.Printf("  ! %-6s %s\n", c.Name, c.Detail)
+						if c.Fix != "" {
+							fmt.Printf("           Fix: %s\n", c.Fix)
+						}
+					}
+				}
+				if diag.Score == diag.MaxScore {
+					fmt.Println("  All checks passed.")
+				}
+			}
+		}
+
+		return nil
+	},
+}
+
+var accountAddSMTPCmd = &cobra.Command{
+	Use:   "add-smtp <email>",
+	Short: "Add a generic SMTP/IMAP sending account",
+	Long: strings.TrimSpace(`
+Add a generic SMTP/IMAP sending account.
+
+SMTP is used for sending. IMAP is used by tick to poll the mailbox for replies,
+unsubscribe requests, and bounces. Passwords are stored as secret references,
+not raw values. The local CLI resolves env:NAME references; hosted callers can
+store secret:ID references and provide a custom SecretResolver.
+`),
+	Example: strings.TrimSpace(`
+export MAIL_PASSWORD='app-password-or-mailbox-password'
+
+cold-cli account add-smtp sender@company.com \
+  --smtp-host smtp.example.com \
+  --smtp-password-ref env:MAIL_PASSWORD \
+  --imap-host imap.example.com
+
+cold-cli account verify sender@company.com
+`),
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		email := strings.TrimSpace(args[0])
+		if _, err := mail.ParseAddress(email); err != nil {
+			return fmt.Errorf("invalid email address %q", email)
+		}
+
+		dailyLimit, _ := cmd.Flags().GetInt("daily-limit")
+		smtpHost, _ := cmd.Flags().GetString("smtp-host")
+		smtpPort, _ := cmd.Flags().GetInt("smtp-port")
+		smtpUser, _ := cmd.Flags().GetString("smtp-user")
+		smtpPasswordRef, _ := cmd.Flags().GetString("smtp-password-ref")
+		smtpTLS, _ := cmd.Flags().GetString("smtp-tls")
+		imapHost, _ := cmd.Flags().GetString("imap-host")
+		imapPort, _ := cmd.Flags().GetInt("imap-port")
+		imapUser, _ := cmd.Flags().GetString("imap-user")
+		imapPasswordRef, _ := cmd.Flags().GetString("imap-password-ref")
+		imapTLS, _ := cmd.Flags().GetString("imap-tls")
+
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.AddSMTPIMAPAccount(db, internal.AddSMTPIMAPAccountOpts{
+			WorkspaceID:     currentWorkspaceID(),
+			Email:           email,
+			DailyLimit:      dailyLimit,
+			SMTPHost:        smtpHost,
+			SMTPPort:        smtpPort,
+			SMTPUsername:    smtpUser,
+			SMTPPasswordRef: smtpPasswordRef,
+			SMTPTLSMode:     smtpTLS,
+			IMAPHost:        imapHost,
+			IMAPPort:        imapPort,
+			IMAPUsername:    imapUser,
+			IMAPPasswordRef: imapPasswordRef,
+			IMAPTLSMode:     imapTLS,
+		})
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Printf("Added SMTP/IMAP account %s (id=%d, workspace=%s, daily_limit=%d)\n", result.Email, result.ID, result.WorkspaceID, result.DailyLimit)
+		fmt.Printf("  smtp: %s:%d (%s)\n", result.SMTPHost, result.SMTPPort, result.SMTPTLSMode)
+		fmt.Printf("  imap: %s:%d (%s)\n", result.IMAPHost, result.IMAPPort, result.IMAPTLSMode)
+		fmt.Println()
+		fmt.Printf("Verify credentials with: cold-cli account verify %s\n", result.Email)
+		return nil
+	},
+}
+
+var accountListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List sending accounts",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		allWorkspaces, _ := cmd.Flags().GetBool("all-workspaces")
+		var accounts []internal.ListAccountsRow
+		if allWorkspaces {
+			accounts, err = internal.ListAllAccounts(db)
+		} else {
+			accounts, err = internal.ListAccountsForWorkspace(db, currentWorkspaceID())
+		}
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(accounts)
+		}
+
+		if len(accounts) == 0 {
+			fmt.Println("No accounts. Add one with: cold-cli account add <email> or cold-cli account add-smtp <email>")
+			return nil
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tWORKSPACE\tEMAIL\tPROVIDER\tDAILY LIMIT\tSTATUS")
+		for _, a := range accounts {
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%d\t%s\n", a.ID, a.WorkspaceID, a.Email, a.Provider, a.DailyLimit, a.Status)
+		}
+		return w.Flush()
+	},
+}
+
+var accountVerifyCmd = &cobra.Command{
+	Use:   "verify <email>",
+	Short: "Verify SMTP/IMAP account connectivity",
+	Long: strings.TrimSpace(`
+Verify a generic SMTP/IMAP account.
+
+The check resolves the account's env: secret references with the default local
+resolver, authenticates with the
+SMTP server, authenticates with the IMAP server, and selects the inbox mailbox.
+It exits non-zero if either side fails.
+`),
+	Example: strings.TrimSpace(`
+cold-cli account verify sender@company.com
+cold-cli account verify sender@company.com --json
+`),
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		email := strings.TrimSpace(args[0])
+
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		account, err := internal.GetAccountByEmail(db, email)
+		if err != nil {
+			return err
+		}
+
+		result, verifyErr := internal.VerifySMTPIMAPAccount(account, nil, nil)
+		if jsonOutput {
+			if result == nil {
+				return verifyErr
+			}
+			if err := printJSON(result); err != nil {
+				return err
+			}
+			return verifyErr
+		}
+		if result == nil {
+			return verifyErr
+		}
+
+		fmt.Printf("Verifying %s (%s)\n", result.Email, result.Provider)
+		printCheckResult("SMTP", result.SMTPOK, result.SMTPError)
+		printCheckResult("IMAP", result.IMAPOK, result.IMAPError)
+		return verifyErr
+	},
+}
+
+func printCheckResult(label string, ok bool, detail string) {
+	if ok {
+		fmt.Printf("  %s: ok\n", label)
+		return
+	}
+	if detail == "" {
+		detail = "failed"
+	}
+	fmt.Printf("  %s: failed: %s\n", label, detail)
+}
+
+var accountPauseCmd = &cobra.Command{
+	Use:   "pause <email>",
+	Short: "Pause an account (stops sending, cancels pending sends)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.PauseAccount(db, strings.TrimSpace(args[0]))
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+		fmt.Printf("Paused account %s: %d sends cancelled\n", result.Email, result.CancelledSends)
+		return nil
+	},
+}
+
+var accountResumeCmd = &cobra.Command{
+	Use:   "resume <email>",
+	Short: "Resume a paused account",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		email := strings.TrimSpace(args[0])
+		result, err := internal.ResumeAccount(db, email)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+		fmt.Printf("Resumed account %s: %d sends restored\n", result.Email, result.RestoredSends)
+		return nil
+	},
+}
+
+var accountUpdateCmd = &cobra.Command{
+	Use:   "update <email>",
+	Short: "Update account settings (daily limit)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		email := strings.TrimSpace(args[0])
+		opts := internal.UpdateAccountOpts{}
+		changed := false
+
+		if cmd.Flags().Changed("daily-limit") {
+			v, _ := cmd.Flags().GetInt("daily-limit")
+			opts.DailyLimit = &v
+			changed = true
+		}
+
+		if !changed {
+			return fmt.Errorf("no settings to update -- use --daily-limit")
+		}
+
+		if err := internal.UpdateAccount(db, email, opts); err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(map[string]any{"email": email, "updated": true})
+		}
+
+		fmt.Printf("Updated account %s\n", email)
+		if opts.DailyLimit != nil {
+			fmt.Printf("  daily limit: %d\n", *opts.DailyLimit)
+		}
+		return nil
+	},
+}
+
+var accountUpdateSMTPCmd = &cobra.Command{
+	Use:   "update-smtp <email>",
+	Short: "Update a generic SMTP/IMAP account",
+	Long: strings.TrimSpace(`
+Update a generic SMTP/IMAP account.
+
+Only flags you provide are changed. Use port 0 to reset a port to the default
+for the selected TLS mode. Run account verify after changing server or
+credential settings.
+`),
+	Example: strings.TrimSpace(`
+cold-cli account update-smtp sender@company.com \
+  --smtp-host smtp.example.com \
+  --smtp-password-ref env:MAIL_PASSWORD
+
+cold-cli account update-smtp sender@company.com --smtp-tls starttls --smtp-port 0
+cold-cli account verify sender@company.com
+`),
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		email := strings.TrimSpace(args[0])
+		opts := internal.UpdateSMTPIMAPAccountOpts{}
+		changed := false
+
+		if cmd.Flags().Changed("daily-limit") {
+			v, _ := cmd.Flags().GetInt("daily-limit")
+			opts.DailyLimit = &v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "smtp-host"); ok {
+			opts.SMTPHost = v
+			changed = true
+		}
+		if v, ok := changedIntFlag(cmd, "smtp-port"); ok {
+			opts.SMTPPort = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "smtp-user"); ok {
+			opts.SMTPUsername = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "smtp-password-ref"); ok {
+			opts.SMTPPasswordRef = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "smtp-tls"); ok {
+			opts.SMTPTLSMode = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "imap-host"); ok {
+			opts.IMAPHost = v
+			changed = true
+		}
+		if v, ok := changedIntFlag(cmd, "imap-port"); ok {
+			opts.IMAPPort = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "imap-user"); ok {
+			opts.IMAPUsername = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "imap-password-ref"); ok {
+			opts.IMAPPasswordRef = v
+			changed = true
+		}
+		if v, ok := changedStringFlag(cmd, "imap-tls"); ok {
+			opts.IMAPTLSMode = v
+			changed = true
+		}
+
+		if !changed {
+			return fmt.Errorf("no settings to update")
+		}
+
+		result, err := internal.UpdateSMTPIMAPAccount(db, email, opts)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Printf("Updated SMTP/IMAP account %s\n", result.Email)
+		fmt.Printf("  smtp: %s:%d (%s)\n", result.SMTPHost, result.SMTPPort, result.SMTPTLSMode)
+		fmt.Printf("  imap: %s:%d (%s)\n", result.IMAPHost, result.IMAPPort, result.IMAPTLSMode)
+		fmt.Println()
+		fmt.Printf("Verify credentials with: cold-cli account verify %s\n", result.Email)
+		return nil
+	},
+}
+
+func changedStringFlag(cmd *cobra.Command, name string) (*string, bool) {
+	if !cmd.Flags().Changed(name) {
+		return nil, false
+	}
+	value, _ := cmd.Flags().GetString(name)
+	return &value, true
+}
+
+func changedIntFlag(cmd *cobra.Command, name string) (*int, bool) {
+	if !cmd.Flags().Changed(name) {
+		return nil, false
+	}
+	value, _ := cmd.Flags().GetInt(name)
+	return &value, true
+}
+
+var accountRemoveCmd = &cobra.Command{
+	Use:   "remove <email>",
+	Short: "Remove an account and cancel its pending sends",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.RemoveAccount(db, strings.TrimSpace(args[0]))
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+		fmt.Printf("Removed account %s: %d sends cancelled\n", result.Email, result.CancelledSends)
+		return nil
+	},
+}
+
+// --- lead commands ---
+
+var leadCmd = &cobra.Command{
+	Use:   "lead",
+	Short: "Manage leads",
+}
+
+var leadListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List leads, optionally filtered by domain or status",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		domain, _ := cmd.Flags().GetString("domain")
+		status, _ := cmd.Flags().GetString("status")
+		limit, _ := cmd.Flags().GetInt("limit")
+
+		leads, err := internal.ListLeads(db, domain, status, limit)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(leads)
+		}
+
+		if len(leads) == 0 {
+			fmt.Println("No leads found.")
+			return nil
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tEMAIL\tNAME\tCOMPANY\tDOMAIN\tSTATUS\tCAMPAIGNS")
+		for _, l := range leads {
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%d\n",
+				l.ID, l.Email, l.FirstName, l.Company, l.Domain, l.GlobalStatus, l.Campaigns)
+		}
+		return w.Flush()
+	},
+}
+
+var leadPauseCmd = &cobra.Command{
+	Use:   "pause <email>",
+	Short: "Pause a lead across all campaigns",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.PauseLead(db, strings.TrimSpace(args[0]))
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Printf("Paused %s: %d campaigns paused, %d sends cancelled\n",
+			result.Email, result.PausedCampaigns, result.CancelledSends)
+		return nil
+	},
+}
+
+var leadResumeCmd = &cobra.Command{
+	Use:   "resume <email>",
+	Short: "Resume a paused lead across all campaigns",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.ResumeLead(db, strings.TrimSpace(args[0]))
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Printf("Resumed %s: %d campaigns resumed, %d sends restored\n",
+			result.Email, result.ResumedCampaigns, result.RestoredSends)
+		return nil
+	},
+}
+
+var leadBlacklistCmd = &cobra.Command{
+	Use:   "blacklist <email|domain>",
+	Short: "Blacklist a lead by email or all leads on a domain",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.BlacklistLead(db, strings.TrimSpace(args[0]))
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		if result.IsDomain {
+			fmt.Printf("Blacklisted domain %s: %d leads blacklisted, %d sends cancelled\n",
+				result.Target, result.BlacklistedLeads, result.CancelledSends)
+		} else {
+			fmt.Printf("Blacklisted %s: %d sends cancelled\n", result.Target, result.CancelledSends)
+		}
+		return nil
+	},
+}
+
+// --- campaign commands ---
+
+var campaignCmd = &cobra.Command{
+	Use:   "campaign",
+	Short: "Manage campaigns",
+}
+
+var campaignCreateCmd = &cobra.Command{
+	Use:   "create",
+	Short: "Create a new campaign from a sequence YAML and leads CSV",
+	Long:  "Create a new campaign from a sequence YAML and leads CSV. Leads may optionally include a schedule_timezone CSV column for per-lead timezone scheduling while still using the campaign send window and send days.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name, _ := cmd.Flags().GetString("name")
+		seqFile, _ := cmd.Flags().GetString("sequence")
+		seqInline, _ := cmd.Flags().GetString("sequence-inline")
+		leadsFile, _ := cmd.Flags().GetString("leads")
+		leadsInline, _ := cmd.Flags().GetString("leads-inline")
+		accountsFlag, _ := cmd.Flags().GetString("accounts")
+		startDate, _ := cmd.Flags().GetString("start-date")
+		sendDays, _ := cmd.Flags().GetString("send-days")
+
+		if name == "" || accountsFlag == "" {
+			return fmt.Errorf("required flags: --name, --accounts")
+		}
+		if seqFile == "" && seqInline == "" {
+			return fmt.Errorf("provide --sequence (file path) or --sequence-inline (YAML content)")
+		}
+		if leadsFile == "" && leadsInline == "" {
+			return fmt.Errorf("provide --leads (file path) or --leads-inline (CSV content)")
+		}
+
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		result, err := internal.CreateCampaign(db, internal.CreateCampaignOpts{
+			WorkspaceID:    currentWorkspaceID(),
+			Name:           name,
+			SequenceFile:   seqFile,
+			SequenceInline: seqInline,
+			LeadsFile:      leadsFile,
+			LeadsInline:    leadsInline,
+			AccountEmails:  strings.Split(accountsFlag, ","),
+			StartDate:      startDate,
+			SendDays:       sendDays,
+		})
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		for _, w := range result.Warnings {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
+		}
+		fmt.Printf("Created campaign %q (id=%d)\n", result.Name, result.ID)
+		fmt.Printf("  leads:    %d\n", result.Leads)
+		fmt.Printf("  sends:    %d\n", result.ScheduledSends)
+		fmt.Printf("  accounts: %d\n", result.Accounts)
+		fmt.Printf("  status:   %s\n", result.Status)
+		fmt.Printf("\nRun 'cold-cli campaign preview %s' to review the schedule.\n", result.Name)
+		return nil
+	},
+}
+
+var campaignPreviewCmd = &cobra.Command{
+	Use:   "preview <name|id>",
+	Short: "Preview the full send schedule for a campaign",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+		if err != nil {
+			return err
+		}
+
+		render, _ := cmd.Flags().GetBool("render")
+
+		if render {
+			leadFilter, _ := cmd.Flags().GetString("lead")
+			rendered, err := internal.GetCampaignRenderedPreview(db, name, leadFilter)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return printJSON(map[string]any{"campaign": name, "emails": rendered})
+			}
+			for i, e := range rendered {
+				if i > 0 {
+					fmt.Println(strings.Repeat("-", 60))
+				}
+				fmt.Printf("Step %d (variant %d) | %s -> %s\n", e.StepNumber, e.VariantIndex, e.AccountEmail, e.LeadEmail)
+				fmt.Printf("Subject: %s\n\n", e.Subject)
+				if len(e.StrippedVars) > 0 {
+					fmt.Printf("Stripped vars: %s\n\n", strings.Join(e.StrippedVars, ", "))
+				}
+				fmt.Println(e.Body)
+				fmt.Println()
+			}
+			return nil
+		}
+
+		_, status, preview, err := internal.GetCampaignPreview(db, name)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(map[string]any{
+				"campaign": name,
+				"status":   status,
+				"total":    len(preview),
+				"schedule": preview,
+			})
+		}
+
+		if len(preview) == 0 {
+			fmt.Printf("Campaign %q has no scheduled sends.\n", name)
+			return nil
+		}
+
+		fmt.Printf("Campaign: %s (status: %s, %d sends)\n", name, status, len(preview))
+		fmt.Println()
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "SEND AT\tSTEP\tVARIANT\tLEAD\tACCOUNT\tSTATUS")
+		for _, r := range preview {
+			statusCol := r.Status
+			if r.Status == "failed" && r.ErrorMessage != "" {
+				statusCol = r.Status + "  " + r.ErrorMessage
+			}
+			fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\t%s\n",
+				r.SendAt, r.StepNumber, r.VariantIndex, r.LeadEmail, r.AccountEmail, statusCol)
+		}
+		w.Flush()
+
+		// Show daily limit overflow warnings
+		warnings, err := internal.GetDailyLimitWarnings(db)
+		if err == nil && len(warnings) > 0 {
+			fmt.Println()
+			for _, warn := range warnings {
+				fmt.Printf("  ! %s: %d sends scheduled for %s, limit is %d (across all campaigns) — %d will defer\n",
+					warn.Date, warn.Scheduled, warn.Account, warn.Limit, warn.Overflow)
+			}
+		}
+
+		return nil
+	},
+}
+
+var campaignListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all campaigns",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		campaigns, err := internal.ListCampaignsForWorkspace(db, currentWorkspaceID())
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(campaigns)
+		}
+
+		if len(campaigns) == 0 {
+			fmt.Println("No campaigns. Create one with: cold-cli campaign create")
+			return nil
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tWORKSPACE\tNAME\tSTATUS\tLEADS\tSENDS\tWINDOW\tDAYS")
+		for _, c := range campaigns {
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n", c.ID, c.WorkspaceID, c.Name, c.Status, c.Leads, c.Sends, c.SendWindow, c.SendDays)
+		}
+		return w.Flush()
+	},
+}
+
+var campaignRemoveLeadCmd = &cobra.Command{
+	Use:   "remove-lead <name|id> <email>",
+	Short: "Remove a single lead from a campaign",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+		if err != nil {
+			return err
+		}
+
+		result, err := internal.RemoveLeadFromCampaign(db, name, strings.TrimSpace(args[1]))
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Printf("Removed %s from campaign %q: %d sends cancelled\n",
+			result.Email, result.Campaign, result.CancelledSends)
+		return nil
+	},
+}
+
+var campaignDeleteCmd = &cobra.Command{
+	Use:   "delete <name|id>",
+	Short: "Delete a campaign and all associated data",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+		if err != nil {
+			return err
+		}
+
+		id, err := internal.DeleteCampaign(db, name)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(map[string]any{"name": name, "id": id, "deleted": true})
+		}
+
+		fmt.Printf("Deleted campaign %q (id=%d)\n", name, id)
+		return nil
+	},
+}
+
+var campaignUpdateCmd = &cobra.Command{
+	Use:   "update <name|id>",
+	Short: "Update campaign settings (sequence, send window, days, gaps)",
+	Long:  "Update campaign-level settings such as sequence, send window, send days, timezone, and gaps. Lead-level schedule_timezone overrides from CSV remain lead-specific and are not changed by this command.",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+		if err != nil {
+			return err
+		}
+
+		opts := internal.UpdateCampaignOpts{}
+		changed := false
+
+		if cmd.Flags().Changed("send-window-start") {
+			v, _ := cmd.Flags().GetString("send-window-start")
+			opts.SendWindowStart = &v
+			changed = true
+		}
+		if cmd.Flags().Changed("send-window-end") {
+			v, _ := cmd.Flags().GetString("send-window-end")
+			opts.SendWindowEnd = &v
+			changed = true
+		}
+		if cmd.Flags().Changed("send-days") {
+			v, _ := cmd.Flags().GetString("send-days")
+			opts.SendDays = &v
+			changed = true
+		}
+		if cmd.Flags().Changed("timezone") {
+			v, _ := cmd.Flags().GetString("timezone")
+			opts.Timezone = &v
+			changed = true
+		}
+		if cmd.Flags().Changed("min-gap") {
+			v, _ := cmd.Flags().GetInt("min-gap")
+			opts.MinGapSeconds = &v
+			changed = true
+		}
+		if cmd.Flags().Changed("max-gap") {
+			v, _ := cmd.Flags().GetInt("max-gap")
+			opts.MaxGapSeconds = &v
+			changed = true
+		}
+		if cmd.Flags().Changed("sequence") {
+			v, _ := cmd.Flags().GetString("sequence")
+			opts.SequenceFile = &v
+			changed = true
+		}
+
+		if !changed {
+			return fmt.Errorf("no settings to update — use flags like --sequence, --send-days, --send-window-start, etc.")
+		}
+
+		if err := internal.UpdateCampaign(db, name, opts); err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(map[string]any{"name": name, "updated": true})
+		}
+
+		fmt.Printf("Updated campaign %q\n", name)
+		return nil
+	},
+}
+
+var campaignCloneCmd = &cobra.Command{
+	Use:   "clone <source-name|id>",
+	Short: "Clone a campaign with new leads (copies sequence + settings)",
+	Long:  "Clone a campaign with new leads while copying sequence and campaign settings. Leads may optionally include a schedule_timezone CSV column for per-lead timezone scheduling.",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name, _ := cmd.Flags().GetString("name")
+		leadsFile, _ := cmd.Flags().GetString("leads")
+		leadsInline, _ := cmd.Flags().GetString("leads-inline")
+		accountsFlag, _ := cmd.Flags().GetString("accounts")
+
+		if name == "" {
+			return fmt.Errorf("required flag: --name")
+		}
+		if leadsFile == "" && leadsInline == "" {
+			return fmt.Errorf("provide --leads (file path) or --leads-inline (CSV content)")
+		}
+
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		sourceName, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+		if err != nil {
+			return err
+		}
+
+		var accounts []string
+		if accountsFlag != "" {
+			accounts = strings.Split(accountsFlag, ",")
+		}
+
+		result, err := internal.CloneCampaign(db, internal.CloneCampaignOpts{
+			WorkspaceID: currentWorkspaceID(),
+			SourceName:  sourceName,
+			NewName:     name,
+			LeadsFile:   leadsFile,
+			LeadsInline: leadsInline,
+			Accounts:    accounts,
+		})
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		for _, w := range result.Warnings {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
+		}
+		fmt.Printf("Cloned %q -> %q (id=%d)\n", sourceName, result.Name, result.ID)
+		fmt.Printf("  leads:    %d\n", result.Leads)
+		fmt.Printf("  sends:    %d\n", result.ScheduledSends)
+		fmt.Printf("  accounts: %d\n", result.Accounts)
+		fmt.Printf("  status:   %s\n", result.Status)
+		fmt.Printf("\nRun 'cold-cli campaign preview %s' to review the schedule.\n", result.Name)
+		return nil
+	},
+}
+
+var campaignAddLeadsCmd = &cobra.Command{
+	Use:   "add-leads <name|id>",
+	Short: "Add new leads to an existing campaign",
+	Long:  "Add new leads to an existing campaign. Leads may optionally include a schedule_timezone CSV column for per-lead timezone scheduling under the campaign's existing send window and send days.",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		leadsFile, _ := cmd.Flags().GetString("leads")
+		leadsInline, _ := cmd.Flags().GetString("leads-inline")
+		if leadsFile == "" && leadsInline == "" {
+			return fmt.Errorf("provide --leads (file path) or --leads-inline (CSV content)")
+		}
+
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+		if err != nil {
+			return err
+		}
+
+		result, err := internal.AddLeadsToCampaign(db, name, leadsFile, leadsInline)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		for _, w := range result.Warnings {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
+		}
+		fmt.Printf("Added leads to %q\n", result.Campaign)
+		fmt.Printf("  added:   %d\n", result.LeadsAdded)
+		fmt.Printf("  skipped: %d (already in campaign, blacklisted, or bounced)\n", result.LeadsSkipped)
+		fmt.Printf("  sends:   %d scheduled\n", result.ScheduledSends)
+		return nil
+	},
+}
+
+var campaignValidateLeadsCmd = &cobra.Command{
+	Use:   "validate-leads",
+	Short: "Validate campaign lead recipient emails before import",
+	Long:  "Validate a leads CSV before campaign create/add-leads. Company-domain emails are checked with MX + SMTP RCPT. Free-mail and catch-all domains require manual review unless explicitly allowed.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		leadsFile, _ := cmd.Flags().GetString("leads")
+		leadsInline, _ := cmd.Flags().GetString("leads-inline")
+		allowFreeEmail, _ := cmd.Flags().GetBool("allow-free-email")
+		allowCatchAll, _ := cmd.Flags().GetBool("allow-catch-all")
+		allowUnknown, _ := cmd.Flags().GetBool("allow-unknown")
+		noStrictExit, _ := cmd.Flags().GetBool("no-strict-exit")
+		timeoutSeconds, _ := cmd.Flags().GetInt("timeout")
+
+		if leadsFile == "" && leadsInline == "" {
+			return fmt.Errorf("provide --leads (file path) or --leads-inline (CSV content)")
+		}
+		if timeoutSeconds < 1 {
+			return fmt.Errorf("--timeout must be at least 1 second")
+		}
+
+		var records []internal.LeadRecord
+		var err error
+		if leadsInline != "" {
+			records, _, err = internal.ParseLeadsCSVFromReader(strings.NewReader(leadsInline))
+		} else {
+			records, _, err = internal.ParseLeadsCSV(leadsFile)
+		}
+		if err != nil {
+			return err
+		}
+
+		result, err := internal.ValidateLeadEmails(records, nil, internal.EmailValidationPolicy{
+			AllowFreeEmail: allowFreeEmail,
+			AllowCatchAll:  allowCatchAll,
+			AllowUnknown:   allowUnknown,
+			Timeout:        time.Duration(timeoutSeconds) * time.Second,
+		})
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			if err := printJSON(result); err != nil {
+				return err
+			}
+		} else {
+			fmt.Println("Lead email validation")
+			fmt.Printf("  checked:       %d\n", result.Checked)
+			fmt.Printf("  pass:          %d\n", result.Pass)
+			fmt.Printf("  manual_review: %d\n", result.ManualReview)
+			fmt.Printf("  fail:          %d\n", result.Fail)
+			for _, row := range result.Rows {
+				if row.ValidationStatus == internal.EmailValidationPass {
+					continue
+				}
+				fmt.Printf("  - %s %s (%s): %s\n", row.ValidationStatus, row.Email, row.SMTPStatus, row.Detail)
+			}
+		}
+
+		if result.HasBlockingRows() && !noStrictExit {
+			return fmt.Errorf("lead email validation did not pass: %d manual review, %d failed", result.ManualReview, result.Fail)
+		}
+		return nil
+	},
+}
+
+var campaignRetryCmd = &cobra.Command{
+	Use:   "retry <name|id>",
+	Short: "Reset failed sends back to pending so they get retried",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+		if err != nil {
+			return err
+		}
+
+		var step *int
+		if cmd.Flags().Changed("step") {
+			v, _ := cmd.Flags().GetInt("step")
+			step = &v
+		}
+
+		result, err := internal.RetryCampaign(db, name, step)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		if result.Retried == 0 {
+			fmt.Printf("No failed sends to retry in campaign %q.\n", name)
+		} else {
+			fmt.Printf("Retried %d failed sends in campaign %q.\n", result.Retried, name)
+		}
+		return nil
+	},
+}
+
+var campaignSendNowCmd = &cobra.Command{
+	Use:   "send-now <name|id>",
+	Short: "Set all pending sends to now so the next tick sends them immediately",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+		if err != nil {
+			return err
+		}
+
+		result, err := internal.SendNowCampaign(db, name)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		if result.Updated == 0 {
+			fmt.Printf("No pending sends in campaign %q.\n", name)
+		} else {
+			fmt.Printf("Updated %d pending sends in campaign %q to send now.\n", result.Updated, name)
+			fmt.Println("Run 'cold-cli tick' to send them.")
+		}
+		return nil
+	},
+}
+
+var campaignActivateCmd = &cobra.Command{
+	Use:   "activate <name|id>",
+	Short: "Activate a draft campaign so tick will process it",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+		if err != nil {
+			return err
+		}
+
+		if err := internal.CampaignStateTransition(db, name, "activate", "draft", "active"); err != nil {
+			return err
+		}
+
+		sendNow, _ := cmd.Flags().GetBool("send-now")
+		var sendNowResult *internal.SendNowResult
+		if sendNow {
+			sendNowResult, err = internal.SendNowCampaign(db, name)
+			if err != nil {
+				return err
+			}
+		}
+
+		if jsonOutput {
+			out := map[string]any{"name": name, "status": "active"}
+			if sendNowResult != nil {
+				out["send_now"] = sendNowResult.Updated
+			}
+			return printJSON(out)
+		}
+
+		fmt.Printf("Campaign %q is now active.\n", name)
+		if sendNowResult != nil && sendNowResult.Updated > 0 {
+			fmt.Printf("Updated %d pending sends to send now.\n", sendNowResult.Updated)
+			fmt.Println("Run 'cold-cli tick' to send them.")
+		}
+		return nil
+	},
+}
+
+var campaignPauseCmd = &cobra.Command{
+	Use:   "pause <name|id>",
+	Short: "Pause an active campaign",
+	Args:  cobra.ExactArgs(1),
+	RunE:  campaignStateCmd("pause", "active", "paused"),
+}
+
+var campaignResumeCmd = &cobra.Command{
+	Use:   "resume <name|id>",
+	Short: "Resume a paused campaign",
+	Args:  cobra.ExactArgs(1),
+	RunE:  campaignStateCmd("resume", "paused", "active"),
+}
+
+func campaignStateCmd(action, from, to string) func(cmd *cobra.Command, args []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+		if err != nil {
+			return err
+		}
+
+		if err := internal.CampaignStateTransition(db, name, action, from, to); err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(map[string]any{"name": name, "status": to})
+		}
+
+		fmt.Printf("Campaign %q is now %s.\n", name, to)
+		return nil
+	}
+}
+
+var campaignStatusCmd = &cobra.Command{
+	Use:   "status <name|id>",
+	Short: "Show campaign details and send counts by status",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+		if err != nil {
+			return err
+		}
+
+		info, err := internal.GetCampaignStatus(db, name)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(info)
+		}
+
+		fmt.Printf("Campaign: %s\n", info.Name)
+		fmt.Printf("  status:      %s\n", info.Status)
+		fmt.Printf("  sequence:    %s\n", info.Sequence)
+		fmt.Printf("  timezone:    %s\n", info.Timezone)
+		fmt.Printf("  send window: %s\n", info.SendWindow)
+		fmt.Printf("  send days:   %s\n", info.SendDays)
+		fmt.Printf("  leads:       %d\n", info.Leads)
+		fmt.Printf("  accounts:    %d\n", info.Accounts)
+		fmt.Printf("  created:     %s\n", info.CreatedAt)
+		if info.ReplyRate != nil {
+			fmt.Printf("  reply rate:  %.1f%%\n", *info.ReplyRate)
+		}
+		if info.LastSendAt != nil {
+			fmt.Printf("  last send:   %s\n", *info.LastSendAt)
+		}
+		if info.NextSendAt != nil {
+			fmt.Printf("  next send:   %s\n", *info.NextSendAt)
+		}
+		fmt.Printf("\nScheduled sends: %d total\n", info.TotalSends)
+		for _, s := range []string{"pending", "sent", "failed", "skipped", "cancelled"} {
+			if n, ok := info.SendCounts[s]; ok {
+				fmt.Printf("  %-10s %d\n", s, n)
+			}
+		}
+		if len(info.FailureReasons) > 0 {
+			fmt.Printf("\nFailure reasons:\n")
+			for _, fr := range info.FailureReasons {
+				fmt.Printf("  %s (%d sends)\n", fr.Error, fr.Count)
+			}
+		}
+		return nil
+	},
+}
+
+// --- tick command ---
+
+var tickCmd = &cobra.Command{
+	Use:   "tick",
+	Short: "Run one tick cycle: poll replies/bounces, send due emails",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		sendNow, _ := cmd.Flags().GetBool("now")
+
+		// Set up structured JSON logging to ~/.cold-cli/tick.log
+		logPath := filepath.Join(internal.DataDir(), "tick.log")
+		if logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+			defer logFile.Close()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(logFile, nil)))
+		}
+
+		if !dryRun {
+			if err := internal.EnsureDataDir(); err != nil {
+				return err
+			}
+		}
+
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		if !dryRun {
+			lock, err := store.AcquireTickLock(context.Background())
+			if err != nil {
+				if jsonOutput {
+					return printJSON(map[string]any{"status": "locked", "message": "tick already running"})
+				}
+				fmt.Println("tick already running")
+				return nil
+			}
+			defer lock.Close()
+		}
+
+		db := store.DB
+
+		// Load timezone for daily limit calculation
+		cfg, _ := internal.LoadConfig()
+		var tz *time.Location
+		if cfg != nil {
+			tz, _ = time.LoadLocation(cfg.DefaultTimezone)
+		}
+
+		gwsCLI := configuredGWSClient(store)
+
+		var unsubHeader bool
+		unsubSubject := "Unsubscribe"
+		if cfg != nil {
+			unsubHeader = cfg.UnsubscribeHeader
+			if cfg.UnsubscribeSubject != "" {
+				unsubSubject = cfg.UnsubscribeSubject
+			}
+		}
+
+		result, err := internal.Tick(internal.TickConfig{
+			DB:                           db,
+			GWS:                          gwsCLI,
+			DryRun:                       dryRun,
+			SendNow:                      sendNow,
+			Timezone:                     tz,
+			UnsubscribeHeader:            unsubHeader,
+			UnsubscribeSubject:           unsubSubject,
+			DiscordNotifier:              configuredDiscordNotifierFromEnv(),
+			DiscordProviders:             configuredDiscordProvidersFromEnv(),
+			DiscordOperationalWorkspaces: configuredDiscordOperationalWorkspacesFromEnv(),
+		})
+		if err != nil {
+			return err
+		}
+
+		// Log tick summary to file
+		slog.Info("tick complete",
+			"sent", result.Sent, "failed", result.Failed, "skipped", result.Skipped,
+			"replies", result.RepliesDetected, "unsubscribes", result.UnsubscribesDetected,
+			"bounces", result.BouncesDetected,
+			"discord_notifications", result.DiscordNotificationsSent,
+			"dry_run", result.DryRun)
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		fmt.Println(internal.FormatTickResult(result))
+		return nil
+	},
+}
+
+// --- inbox command ---
+
+var inboxCmd = &cobra.Command{
+	Use:   "inbox",
+	Short: "Manage stored inbox/thread snapshots",
+}
+
+var inboxBackfillCmd = &cobra.Command{
+	Use:   "backfill",
+	Short: "Backfill stored email thread snapshots for historical replies",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		limit, _ := cmd.Flags().GetInt("limit")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		noSent, _ := cmd.Flags().GetBool("no-sent")
+		sinceRaw, _ := cmd.Flags().GetString("since")
+
+		since, err := parseBackfillSince(sinceRaw)
+		if err != nil {
+			return err
+		}
+
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		result, err := internal.BackfillEmailMessages(internal.BackfillEmailMessagesConfig{
+			DB:          store.DB,
+			GWS:         configuredGWSClient(store),
+			Since:       since,
+			Limit:       limit,
+			DryRun:      dryRun,
+			IncludeSent: !noSent,
+		})
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(result)
+		}
+
+		if dryRun {
+			fmt.Printf("[dry-run] would backfill %d messages from %d inbound events", result.Backfilled, result.Scanned)
+		} else {
+			fmt.Printf("Backfilled %d messages from %d inbound events", result.Backfilled, result.Scanned)
+		}
+		fmt.Printf(" (%d inbound, %d sent, %d failed, %d unsupported)\n",
+			result.Inbound, result.Sent, result.Failed, result.Unsupported)
+		return nil
+	},
+}
+
+var inboxReplyCmd = &cobra.Command{
+	Use:   "reply",
+	Short: "Preview or send one manually approved reply in a stored thread",
+	Long: strings.TrimSpace(`
+Preview a one-off reply using the original sending account and stored thread
+headers. Preview is the default and never sends email.
+
+Sending requires --send plus --confirm-to matching the previewed primary
+recipient. If --reply-all adds Cc recipients, --confirm-cc must match the
+previewed comma-separated list. The body must come from a file so the exact
+reviewed copy is preserved.
+`),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		campaignID, _ := cmd.Flags().GetInt64("campaign")
+		leadID, _ := cmd.Flags().GetInt64("lead")
+		bodyFile, _ := cmd.Flags().GetString("body-file")
+		subject, _ := cmd.Flags().GetString("subject")
+		replyAll, _ := cmd.Flags().GetBool("reply-all")
+		send, _ := cmd.Flags().GetBool("send")
+		confirmTo, _ := cmd.Flags().GetString("confirm-to")
+		confirmCC, _ := cmd.Flags().GetString("confirm-cc")
+		idempotencyKey, _ := cmd.Flags().GetString("idempotency-key")
+		storedOnly, _ := cmd.Flags().GetBool("stored-only")
+
+		if campaignID < 1 {
+			return fmt.Errorf("--campaign must be a positive integer")
+		}
+		if leadID < 1 {
+			return fmt.Errorf("--lead must be a positive integer")
+		}
+		if strings.TrimSpace(bodyFile) == "" {
+			return fmt.Errorf("--body-file is required")
+		}
+		if send && strings.TrimSpace(confirmTo) == "" {
+			return fmt.Errorf("--confirm-to is required with --send")
+		}
+		if send && storedOnly {
+			return fmt.Errorf("--stored-only cannot be used with --send; provider refresh is mandatory before delivery")
+		}
+		bodyBytes, err := os.ReadFile(bodyFile)
+		if err != nil {
+			return fmt.Errorf("reading --body-file: %w", err)
+		}
+		if len(bodyBytes) > 1024*1024 {
+			return fmt.Errorf("--body-file exceeds the 1 MiB safety limit")
+		}
+		body := strings.TrimSpace(string(bodyBytes))
+		if body == "" {
+			return fmt.Errorf("--body-file is empty")
+		}
+
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		gws := configuredGWSClient(store)
+
+		if !storedOnly {
+			if _, err := internal.SyncEmailThread(internal.SyncEmailThreadConfig{
+				DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID, LeadID: leadID,
+				SecretResolver: internal.EnvSecretResolver{}, GWS: gws,
+			}); err != nil {
+				return fmt.Errorf("refreshing provider thread before preview: %w", err)
+			}
+		}
+
+		preview, err := internal.PreviewInboxReply(internal.PreviewInboxReplyConfig{
+			DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID, LeadID: leadID,
+			Subject: subject, Body: body, ReplyAll: replyAll, IdempotencyKey: idempotencyKey,
+		})
+		if err != nil {
+			return err
+		}
+
+		if !send {
+			if jsonOutput {
+				return printJSON(preview)
+			}
+			printInboxReplyPreview(preview)
+			return nil
+		}
+
+		if !strings.EqualFold(strings.TrimSpace(confirmTo), preview.ToEmail) {
+			return fmt.Errorf("--confirm-to must exactly match preview recipient %s", preview.ToEmail)
+		}
+		expectedCC := strings.Join(preview.CcEmails, ",")
+		if expectedCC != "" && !strings.EqualFold(compactAddressList(confirmCC), compactAddressList(expectedCC)) {
+			return fmt.Errorf("--confirm-cc must exactly match preview Cc recipients %s", strings.Join(preview.CcEmails, ", "))
+		}
+		if expectedCC == "" && strings.TrimSpace(confirmCC) != "" {
+			return fmt.Errorf("--confirm-cc was provided, but the preview has no Cc recipients")
+		}
+
+		result, err := internal.SendInboxReply(internal.SendInboxReplyConfig{
+			DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID, LeadID: leadID,
+			Subject: subject, Body: body, ReplyAll: replyAll, IdempotencyKey: idempotencyKey,
+			GWS: gws,
+		})
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printJSON(result)
+		}
+		if result.AlreadySent {
+			fmt.Printf("Not resent: identical reply was already sent as %s\n", result.MessageID)
+			return nil
+		}
+		fmt.Printf("Sent reply from %s to %s", result.FromEmail, result.ToEmail)
+		if len(result.CcEmails) > 0 {
+			fmt.Printf(" (Cc: %s)", strings.Join(result.CcEmails, ", "))
+		}
+		fmt.Printf(" as %s\n", result.MessageID)
+		for _, warning := range result.Warnings {
+			fmt.Printf("Warning: %s\n", warning)
+		}
+		return nil
+	},
+}
+
+var inboxSyncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Refresh one complete thread from Gmail or IMAP Inbox and Sent",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		campaignID, _ := cmd.Flags().GetInt64("campaign")
+		leadID, _ := cmd.Flags().GetInt64("lead")
+		threadID, _ := cmd.Flags().GetString("thread")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		if campaignID < 1 {
+			return fmt.Errorf("--campaign must be a positive integer")
+		}
+		if leadID < 1 {
+			return fmt.Errorf("--lead must be a positive integer")
+		}
+
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		result, err := internal.SyncEmailThread(internal.SyncEmailThreadConfig{
+			DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID, LeadID: leadID,
+			ThreadID: threadID, DryRun: dryRun, SecretResolver: internal.EnvSecretResolver{},
+			GWS: configuredGWSClient(store),
+		})
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printJSON(result)
+		}
+		prefix := "Refreshed"
+		if dryRun {
+			prefix = "[dry-run] Would refresh"
+		}
+		fmt.Printf("%s %s thread %s: fetched %d, matched %d, added %d, updated %d (%d inbound, %d outbound), %d stored\n",
+			prefix, result.Provider, result.ThreadID, result.Fetched, result.Matched, result.Added, result.Updated,
+			result.InboundAdded, result.OutboundAdded, result.Stored)
+		return nil
+	},
+}
+
+var inboxAuditCmd = &cobra.Command{
+	Use:   "audit",
+	Short: "Audit provider campaign threads for untracked messages",
+	Long: strings.TrimSpace(`
+Read complete Gmail campaign threads and search every selectable IMAP mailbox
+using campaign RFC message IDs. This command is read-only: it reports provider
+messages that are missing from cold-cli without storing or sending.
+`),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sinceValue, _ := cmd.Flags().GetString("since")
+		apply, _ := cmd.Flags().GetBool("apply")
+		since, err := parseBackfillSince(sinceValue)
+		if err != nil {
+			return err
+		}
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		if apply {
+			lock, err := store.AcquireTickLock(context.Background())
+			if err != nil {
+				return fmt.Errorf("provider reconciliation requires the tick lock: %w", err)
+			}
+			defer lock.Close()
+		}
+		result, auditErr := internal.AuditInboxHistory(internal.AuditInboxHistoryConfig{
+			DB: store.DB, WorkspaceID: currentWorkspaceID(), Since: since,
+			SecretResolver: internal.EnvSecretResolver{}, GWS: configuredGWSClient(store), Apply: apply,
+		})
+		if jsonOutput {
+			if err := printJSON(result); err != nil {
+				return err
+			}
+		} else {
+			fmt.Printf("Audited %d provider messages across %d accounts since %s: %d campaign-thread matches, %d untracked, %d applied\n",
+				result.Scanned, len(result.Accounts), result.Since.Format(time.RFC3339), result.Matched, result.Missing, result.Applied)
+			for _, message := range result.Messages {
+				fmt.Printf("%s %s campaign=%d lead=%d account=%s at=%s subject=%q message_id=%s\n",
+					message.Direction, message.Type, message.CampaignID, message.LeadID, message.AccountEmail,
+					message.OccurredAt.Format(time.RFC3339), message.Subject, message.MessageID)
+			}
+		}
+		return auditErr
+	},
+}
+
+var inboxReconcileCmd = &cobra.Command{
+	Use:   "reconcile",
+	Short: "Import provider-confirmed campaign messages and verify clean state",
+	Long: strings.TrimSpace(`
+Import campaign-thread messages sent or received outside cold-cli, then repeat
+the provider audit in read-only mode. No email is sent. The command exits
+non-zero if any account fails or any provider message remains untracked.
+`),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sinceValue, _ := cmd.Flags().GetString("since")
+		notifyErrors, _ := cmd.Flags().GetBool("notify-errors")
+		lockWait, _ := cmd.Flags().GetDuration("lock-wait")
+		since, err := parseBackfillSince(sinceValue)
+		if err != nil {
+			if notifyErrors {
+				notifyInboxReconciliationFailure(err)
+			}
+			return err
+		}
+		store, err := openStore()
+		if err != nil {
+			if notifyErrors {
+				notifyInboxReconciliationFailure(err)
+			}
+			return err
+		}
+		defer store.Close()
+		lock, err := acquireTickLockWithWait(store, lockWait)
+		if err != nil {
+			lockErr := fmt.Errorf("provider reconciliation requires the tick lock: %w", err)
+			if notifyErrors {
+				notifyInboxReconciliationFailure(lockErr)
+			}
+			return lockErr
+		}
+		defer lock.Close()
+		result, reconcileErr := internal.ReconcileInboxHistory(internal.AuditInboxHistoryConfig{
+			DB: store.DB, WorkspaceID: currentWorkspaceID(), Since: since,
+			SecretResolver: internal.EnvSecretResolver{}, GWS: configuredGWSClient(store),
+		})
+		if jsonOutput {
+			if err := printJSON(result); err != nil {
+				return err
+			}
+		} else if result != nil {
+			fmt.Printf("Reconciled workspace %s since %s: discovered %d, applied %d, remaining %d\n",
+				result.WorkspaceID, result.Since.Format(time.RFC3339), result.Discovered, result.Applied, result.Remaining)
+		}
+		if reconcileErr != nil && notifyErrors {
+			notifyInboxReconciliationFailure(reconcileErr)
+		}
+		return reconcileErr
+	},
+}
+
+func acquireTickLockWithWait(store *internal.Store, wait time.Duration) (internal.TickLock, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		lock, err := store.AcquireTickLock(context.Background())
+		if err == nil {
+			return lock, nil
+		}
+		if wait <= 0 || !strings.Contains(strings.ToLower(err.Error()), "tick already running") || !time.Now().Before(deadline) {
+			return nil, err
+		}
+		remaining := time.Until(deadline)
+		pause := 5 * time.Second
+		if remaining < pause {
+			pause = remaining
+		}
+		time.Sleep(pause)
+	}
+}
+
+func notifyInboxReconciliationFailure(reconcileErr error) {
+	notifier := configuredDiscordNotifierFromEnv()
+	if notifier == nil || reconcileErr == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err := notifier.NotifyDiscord(ctx, internal.DiscordNotificationEvent{
+		EventType:   internal.DiscordEventInboxReconciliationFailed,
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		WorkspaceID: currentWorkspaceID(),
+		Snippet:     reconcileErr.Error(),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: inbox reconciliation alert failed: %v\n", err)
+	}
+}
+
+var inboxFollowupsCmd = &cobra.Command{
+	Use:   "followups",
+	Short: "List provider-verified post-conversation follow-up candidates",
+	Long: strings.TrimSpace(`
+Audit provider campaign threads before listing post-conversation revival
+candidates. Candidates have a human inbound reply followed by our outbound
+answer, no later prospect response, and no bounce or unsubscribe suppression.
+
+The command is read-only by default and fails closed when provider messages are
+missing. Use --reconcile to import provider-confirmed messages, verify a clean
+second audit, and then list candidates. This command never drafts or sends.
+`),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sinceValue, _ := cmd.Flags().GetString("since")
+		minAgeValue, _ := cmd.Flags().GetString("min-age")
+		campaignID, _ := cmd.Flags().GetInt64("campaign")
+		maxFollowups, _ := cmd.Flags().GetInt("max-followups")
+		limit, _ := cmd.Flags().GetInt("limit")
+		reconcile, _ := cmd.Flags().GetBool("reconcile")
+		showThread, _ := cmd.Flags().GetBool("show-thread")
+
+		since, err := parseBackfillSince(sinceValue)
+		if err != nil {
+			return err
+		}
+		minAge, err := parseFollowupAge(minAgeValue)
+		if err != nil {
+			return err
+		}
+		if campaignID < 0 {
+			return fmt.Errorf("--campaign must be a positive integer")
+		}
+		if maxFollowups < 0 {
+			return fmt.Errorf("--max-followups must not be negative")
+		}
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		if reconcile {
+			lock, err := store.AcquireTickLock(context.Background())
+			if err != nil {
+				return fmt.Errorf("provider reconciliation requires the tick lock: %w", err)
+			}
+			defer lock.Close()
+		}
+
+		result, reviewErr := internal.ReviewFollowupCandidates(internal.FollowupCandidatesConfig{
+			DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID,
+			Since: since, Now: time.Now().UTC(), MinAge: minAge,
+			MaxFollowups: maxFollowups, Limit: limit, IncludeThread: showThread, Reconcile: reconcile,
+			SecretResolver: internal.EnvSecretResolver{}, GWS: configuredGWSClient(store),
+		})
+		if jsonOutput {
+			if err := printJSON(result); err != nil {
+				return err
+			}
+			return reviewErr
+		}
+		if result != nil && result.Audit != nil {
+			fmt.Printf("Provider audit: scanned %d, matched %d, missing %d across %d accounts\n",
+				result.Audit.Scanned, result.Audit.Matched, result.Audit.Missing, len(result.Audit.Accounts))
+		}
+		if reviewErr != nil {
+			return reviewErr
+		}
+		printFollowupCandidates(result.Candidates, showThread)
+		return nil
+	},
+}
+
+var inboxShowCmd = &cobra.Command{
+	Use:   "show",
+	Short: "Refresh and print one complete stored thread",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		campaignID, _ := cmd.Flags().GetInt64("campaign")
+		leadID, _ := cmd.Flags().GetInt64("lead")
+		threadID, _ := cmd.Flags().GetString("thread")
+		limit, _ := cmd.Flags().GetInt("limit")
+		storedOnly, _ := cmd.Flags().GetBool("stored-only")
+		if campaignID < 1 {
+			return fmt.Errorf("--campaign must be a positive integer")
+		}
+		if leadID < 1 {
+			return fmt.Errorf("--lead must be a positive integer")
+		}
+
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		if !storedOnly {
+			result, err := internal.SyncEmailThread(internal.SyncEmailThreadConfig{
+				DB: store.DB, WorkspaceID: currentWorkspaceID(), CampaignID: campaignID, LeadID: leadID,
+				ThreadID: threadID, SecretResolver: internal.EnvSecretResolver{}, GWS: configuredGWSClient(store),
+			})
+			if err != nil {
+				return err
+			}
+			threadID = result.ThreadID
+		}
+		messages, err := internal.ListEmailThreadMessages(store.DB, internal.ListEmailThreadMessagesOpts{
+			CampaignID: campaignID, LeadID: leadID, ThreadID: threadID, Limit: limit,
+		})
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printJSON(messages)
+		}
+		printEmailThread(messages)
+		return nil
+	},
+}
+
+func printEmailThread(messages []internal.EmailMessage) {
+	if len(messages) == 0 {
+		fmt.Println("No stored thread messages.")
+		return
+	}
+	fmt.Printf("Thread %s (%d messages)\n", messages[0].ThreadID, len(messages))
+	for index, message := range messages {
+		fmt.Printf("\n--- %d/%d %s %s ---\n", index+1, len(messages), strings.ToUpper(message.Direction), message.OccurredAt.UTC().Format(time.RFC3339))
+		fmt.Printf("From: %s\n", message.FromEmail)
+		fmt.Printf("To: %s\n", message.ToEmails)
+		if message.CcEmails != "" {
+			fmt.Printf("Cc: %s\n", message.CcEmails)
+		}
+		fmt.Printf("Subject: %s\n\n", message.Subject)
+		body := strings.TrimSpace(message.DisplayBody)
+		if body == "" {
+			body = strings.TrimSpace(message.TextBody)
+		}
+		if body == "" {
+			body = strings.TrimSpace(message.Snippet)
+		}
+		fmt.Println(body)
+	}
+}
+
+func parseFollowupAge(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if strings.HasSuffix(value, "d") {
+		var days int
+		if _, err := fmt.Sscanf(strings.TrimSuffix(value, "d"), "%d", &days); err != nil || days < 0 {
+			return 0, fmt.Errorf("--min-age must look like 7d or 168h")
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration < 0 {
+		return 0, fmt.Errorf("--min-age must look like 7d or 168h")
+	}
+	return duration, nil
+}
+
+func printFollowupCandidates(candidates []internal.FollowupCandidate, showThread bool) {
+	if len(candidates) == 0 {
+		fmt.Println("No provider-verified follow-up candidates.")
+		return
+	}
+	fmt.Printf("%d provider-verified follow-up candidates:\n", len(candidates))
+	fmt.Println("Structural shortlist only. Review the conversation before drafting or sending.")
+	for _, candidate := range candidates {
+		fmt.Printf("\n#%d campaign=%d lead=%d %s", candidate.Rank, candidate.CampaignID, candidate.LeadID, candidate.Company)
+		if candidate.Company == "" {
+			fmt.Printf("%s", candidate.LeadEmail)
+		}
+		fmt.Printf("\nFrom: %s\nTo: %s\nSubject: %s\n", candidate.FromEmail, candidate.ToEmail, candidate.Subject)
+		fmt.Printf("Last outbound: %s (%d days ago) | replies=%d prior_followups=%d\n",
+			candidate.LastOutboundAt.UTC().Format(time.RFC3339), candidate.AgeDays,
+			candidate.ReplyCount, candidate.FollowupCount)
+		fmt.Printf("Last inbound from %s:\n%s\n", candidate.LastInboundFrom, strings.TrimSpace(candidate.LastInboundBody))
+		fmt.Printf("Our last response:\n%s\n", strings.TrimSpace(candidate.LastOutboundBody))
+		fmt.Printf("Review: cold-cli --workspace %s inbox show --campaign %d --lead %d\n",
+			currentWorkspaceID(), candidate.CampaignID, candidate.LeadID)
+		if showThread {
+			fmt.Printf("Thread (%d messages):\n", len(candidate.Thread))
+			for index, message := range candidate.Thread {
+				fmt.Printf("  --- %d/%d %s %s ---\n", index+1, len(candidate.Thread), strings.ToUpper(message.Direction), message.OccurredAt.UTC().Format(time.RFC3339))
+				fmt.Printf("  From: %s\n  To: %s\n  Subject: %s\n\n%s\n",
+					message.FromEmail, message.ToEmails, message.Subject, strings.TrimSpace(message.Body))
+			}
+		}
+	}
+}
+
+func printInboxReplyPreview(preview *internal.InboxReplyPreview) {
+	fmt.Println("PREVIEW — NOT SENT")
+	from := preview.FromEmail
+	if preview.FromName != "" {
+		from = fmt.Sprintf("%s <%s>", preview.FromName, preview.FromEmail)
+	}
+	fmt.Printf("From: %s\n", from)
+	fmt.Printf("To: %s\n", preview.ToEmail)
+	if len(preview.CcEmails) > 0 {
+		fmt.Printf("Cc: %s\n", strings.Join(preview.CcEmails, ", "))
+	}
+	fmt.Printf("Subject: %s\n", preview.Subject)
+	fmt.Printf("In-Reply-To: %s\n", preview.InReplyTo)
+	fmt.Printf("References: %s\n", preview.References)
+	fmt.Printf("Idempotency-Key: %s\n", preview.IdempotencyKey)
+	for _, warning := range preview.Warnings {
+		fmt.Printf("Warning: %s\n", warning)
+	}
+	fmt.Printf("\n%s\n", preview.Body)
+}
+
+func compactAddressList(value string) string {
+	parts := strings.Split(value, ",")
+	for i := range parts {
+		parts[i] = strings.ToLower(strings.TrimSpace(parts[i]))
+	}
+	return strings.Join(parts, ",")
+}
+
+// --- stats command ---
+
+var statsCmd = &cobra.Command{
+	Use:   "stats [campaign]",
+	Short: "Show send/reply/bounce statistics (per-campaign when name given, global otherwise)",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		db := store.DB
+
+		perLeads, _ := cmd.Flags().GetBool("leads")
+		perVariants, _ := cmd.Flags().GetBool("variants")
+
+		if len(args) == 1 {
+			name, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+			if err != nil {
+				return err
+			}
+			var campaignID int64
+			err = store.QueryRow("SELECT id FROM campaigns WHERE name = ?", name).Scan(&campaignID)
+			if err != nil {
+				return fmt.Errorf("looking up campaign: %w", err)
+			}
+
+			if perVariants {
+				stats, err := internal.GetCampaignVariantStats(db, campaignID)
+				if err != nil {
+					return err
+				}
+				if jsonOutput {
+					return printJSON(map[string]any{"campaign": name, "variants": stats})
+				}
+				if len(stats) == 0 {
+					fmt.Printf("Campaign %q has no sends yet.\n", name)
+					return nil
+				}
+				fmt.Printf("Campaign: %s\n\n", name)
+				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(w, "STEP\tVARIANT\tSENT\tREPLIES\tRATE\tUNSUBS\tBOUNCES")
+				for _, s := range stats {
+					fmt.Fprintf(w, "%d\t%d\t%d\t%d\t%.1f%%\t%d\t%d\n",
+						s.Step, s.Variant, s.Sent, s.Replies, s.ReplyRate, s.Unsubscribes, s.Bounces)
+				}
+				return w.Flush()
+			}
+
+			if perLeads {
+				stats, err := internal.GetCampaignLeadStats(db, campaignID)
+				if err != nil {
+					return err
+				}
+				if jsonOutput {
+					return printJSON(map[string]any{"campaign": name, "leads": stats})
+				}
+				if len(stats) == 0 {
+					fmt.Printf("Campaign %q has no leads.\n", name)
+					return nil
+				}
+				fmt.Printf("Campaign: %s\n\n", name)
+				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(w, "EMAIL\tSTATUS\tSTEPS SENT\tREPLY AT")
+				for _, s := range stats {
+					replyAt := "-"
+					if s.ReplyAt != nil {
+						replyAt = *s.ReplyAt
+					}
+					fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", s.Email, s.Status, s.StepsSent, replyAt)
+				}
+				return w.Flush()
+			}
+
+			stats, err := internal.GetCampaignStepStats(db, campaignID)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return printJSON(map[string]any{"campaign": name, "steps": stats})
+			}
+			if len(stats) == 0 {
+				fmt.Printf("Campaign %q has no events yet.\n", name)
+				return nil
+			}
+			fmt.Printf("Campaign: %s\n\n", name)
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "STEP\tSENT\tREPLIES\tUNSUBS\tBOUNCES")
+			for _, s := range stats {
+				fmt.Fprintf(w, "%d\t%d\t%d\t%d\t%d\n", s.Step, s.Sent, s.Replies, s.Unsubscribes, s.Bounces)
+			}
+			return w.Flush()
+		}
+
+		stats, err := internal.GetAllCampaignStats(db)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printJSON(stats)
+		}
+		if len(stats) == 0 {
+			fmt.Println("No campaigns. Create one with: cold-cli campaign create")
+			return nil
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "CAMPAIGN\tSTATUS\tSENT\tREPLIES\tUNSUBS\tBOUNCES")
+		for _, s := range stats {
+			fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\n", s.Name, s.Status, s.Sent, s.Replies, s.Unsubscribes, s.Bounces)
+		}
+		return w.Flush()
+	},
+}
+
+var logCmd = &cobra.Command{
+	Use:   "log [campaign]",
+	Short: "Show recent activity (sends, replies, bounces, unsubscribes)",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		limit, _ := cmd.Flags().GetInt("limit")
+		var campaignName string
+		if len(args) == 1 {
+			resolved, err := internal.ResolveCampaignNameInWorkspace(db, currentWorkspaceID(), args[0])
+			if err != nil {
+				return err
+			}
+			campaignName = resolved
+		}
+
+		events, err := internal.GetEventLog(db, campaignName, limit)
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(events)
+		}
+
+		if len(events) == 0 {
+			fmt.Println("No events yet.")
+			return nil
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "TIME\tTYPE\tCAMPAIGN\tLEAD\tACCOUNT\tSTEP")
+		for _, e := range events {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
+				e.Timestamp, e.Type, e.Campaign, e.LeadEmail, e.AccountEmail, e.StepNumber)
+		}
+		return w.Flush()
+	},
+}
+
+var campaignInitCmd = &cobra.Command{
+	Use:   "init [directory]",
+	Short: "Scaffold example sequence.yml and leads.csv files",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dir := "."
+		if len(args) == 1 {
+			dir = args[0]
+		}
+
+		seqPath := filepath.Join(dir, "sequence.yml")
+		leadsPath := filepath.Join(dir, "leads.csv")
+
+		// Check for existing files
+		for _, p := range []string{seqPath, leadsPath} {
+			if _, err := os.Stat(p); err == nil {
+				return fmt.Errorf("%s already exists — remove it first or use a different directory", p)
+			}
+		}
+
+		if dir != "." {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return fmt.Errorf("creating directory: %w", err)
+			}
+		}
+
+		seqContent := `name: example-sequence
+
+defaults:
+  from_name: Your Name
+
+steps:
+  - step: 1
+    delay: 0
+    subject: "Quick question, {{first_name}}"
+    body: |
+      Hi {{first_name}},
+
+      I noticed {{company}} and wanted to reach out.
+
+      Would you be open to a quick chat this week?
+
+      Best,
+      Your Name
+
+  - step: 2
+    delay: 3
+    subject: ""
+    body: |
+      Hi {{first_name}},
+
+      Just bumping this to the top of your inbox. Would love to connect.
+
+      Best,
+      Your Name
+
+  - step: 3
+    delay: 5
+    subject: ""
+    body: |
+      Hi {{first_name}},
+
+      Last follow-up. If the timing isn't right, no worries at all.
+
+      Best,
+      Your Name
+`
+		if err := os.WriteFile(seqPath, []byte(seqContent), 0644); err != nil {
+			return fmt.Errorf("writing sequence file: %w", err)
+		}
+
+		leadsContent := `email,first_name,last_name,company,schedule_timezone
+alice@example.com,Alice,Smith,Acme Corp,America/New_York
+bob@example.com,Bob,Jones,Widget Inc,Europe/Oslo
+`
+		if err := os.WriteFile(leadsPath, []byte(leadsContent), 0644); err != nil {
+			return fmt.Errorf("writing leads file: %w", err)
+		}
+
+		if jsonOutput {
+			return printJSON(map[string]any{
+				"sequence": seqPath,
+				"leads":    leadsPath,
+			})
+		}
+
+		fmt.Printf("Created example files:\n")
+		fmt.Printf("  %s  — edit your email sequence here\n", seqPath)
+		fmt.Printf("  %s     — add your leads here (optional: schedule_timezone)\n", leadsPath)
+		fmt.Printf("\nThen create a campaign:\n")
+		fmt.Printf("  cold-cli campaign create --name my-campaign --sequence %s --leads %s --accounts you@gmail.com\n", seqPath, leadsPath)
+		return nil
+	},
+}
+
+func init() {
+	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output as JSON")
+	rootCmd.PersistentFlags().StringVar(&envFilePath, "env-file", "", "load KEY=VALUE secrets from an explicit env file before running the command")
+	rootCmd.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace id for account/campaign commands (default: COLD_CLI_WORKSPACE_ID or default)")
+
+	accountAddCmd.Flags().Int("daily-limit", 50, "max emails per day, shared across all campaigns using this account")
+	accountAddCmd.Flags().Bool("no-login", false, "skip OAuth login (use when gws is already authenticated)")
+	accountAddCmd.Flags().Bool("skip-auth", false, "skip OAuth login (alias for --no-login)")
+	accountAddCmd.Flags().MarkHidden("skip-auth")
+	accountAddSMTPCmd.Flags().Int("daily-limit", 50, "max emails per day, shared across all campaigns using this account")
+	accountAddSMTPCmd.Flags().String("smtp-host", "", "SMTP server hostname")
+	accountAddSMTPCmd.Flags().Int("smtp-port", 0, "SMTP server port (default depends on --smtp-tls)")
+	accountAddSMTPCmd.Flags().String("smtp-user", "", "SMTP username (default: account email)")
+	accountAddSMTPCmd.Flags().String("smtp-password-ref", "", "SMTP password reference, such as env:MAIL_PASSWORD or hosted secret:ID; raw passwords are rejected")
+	accountAddSMTPCmd.Flags().String("smtp-tls", "ssl", "SMTP TLS mode: ssl, starttls, none (default ports: ssl=465, starttls=587, none=25)")
+	accountAddSMTPCmd.Flags().String("imap-host", "", "IMAP server hostname")
+	accountAddSMTPCmd.Flags().Int("imap-port", 0, "IMAP server port (default depends on --imap-tls)")
+	accountAddSMTPCmd.Flags().String("imap-user", "", "IMAP username (default: SMTP username)")
+	accountAddSMTPCmd.Flags().String("imap-password-ref", "", "IMAP password reference (default: SMTP password ref)")
+	accountAddSMTPCmd.Flags().String("imap-tls", "ssl", "IMAP TLS mode: ssl, starttls, none (default ports: ssl=993, starttls=143, none=143)")
+	accountUpdateCmd.Flags().Int("daily-limit", 0, "max emails per day, shared across all campaigns using this account")
+	accountUpdateSMTPCmd.Flags().Int("daily-limit", 0, "max emails per day, shared across all campaigns using this account")
+	accountUpdateSMTPCmd.Flags().String("smtp-host", "", "SMTP server hostname")
+	accountUpdateSMTPCmd.Flags().Int("smtp-port", 0, "SMTP server port; use 0 to reset to default for --smtp-tls")
+	accountUpdateSMTPCmd.Flags().String("smtp-user", "", "SMTP username")
+	accountUpdateSMTPCmd.Flags().String("smtp-password-ref", "", "SMTP password reference, such as env:MAIL_PASSWORD or hosted secret:ID; raw passwords are rejected")
+	accountUpdateSMTPCmd.Flags().String("smtp-tls", "", "SMTP TLS mode: ssl, starttls, none")
+	accountUpdateSMTPCmd.Flags().String("imap-host", "", "IMAP server hostname")
+	accountUpdateSMTPCmd.Flags().Int("imap-port", 0, "IMAP server port; use 0 to reset to default for --imap-tls")
+	accountUpdateSMTPCmd.Flags().String("imap-user", "", "IMAP username")
+	accountUpdateSMTPCmd.Flags().String("imap-password-ref", "", "IMAP password reference (empty uses SMTP password ref)")
+	accountUpdateSMTPCmd.Flags().String("imap-tls", "", "IMAP TLS mode: ssl, starttls, none")
+	accountListCmd.Flags().Bool("all-workspaces", false, "list accounts from every workspace")
+	accountCmd.AddCommand(accountAddCmd, accountAddSMTPCmd, accountListCmd, accountVerifyCmd, accountPauseCmd, accountResumeCmd, accountRemoveCmd, accountUpdateCmd, accountUpdateSMTPCmd)
+	leadListCmd.Flags().String("domain", "", "filter by domain")
+	leadListCmd.Flags().String("status", "", "filter by status (active, blacklisted, bounced)")
+	leadListCmd.Flags().Int("limit", 50, "max leads to show")
+	leadCmd.AddCommand(leadListCmd, leadPauseCmd, leadResumeCmd, leadBlacklistCmd)
+
+	campaignCreateCmd.Flags().String("name", "", "campaign name")
+	campaignCreateCmd.Flags().String("sequence", "", "path to sequence YAML file")
+	campaignCreateCmd.Flags().String("sequence-inline", "", "sequence YAML content (alternative to --sequence)")
+	campaignCreateCmd.Flags().String("leads", "", "path to leads CSV file (optional per-lead schedule_timezone column supported)")
+	campaignCreateCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads; optional per-lead schedule_timezone column supported)")
+	campaignCreateCmd.Flags().String("accounts", "", "comma-separated account emails")
+	campaignCreateCmd.Flags().String("start-date", "", "start date (YYYY-MM-DD); default: tomorrow")
+	campaignCreateCmd.Flags().String("send-days", "", "campaign send days override: numbers (0=Sun,1=Mon,...,6=Sat) or names (mon,tue,wed)")
+	campaignPreviewCmd.Flags().Bool("render", false, "show rendered email content with templates filled in, including stripped placeholder warnings")
+	campaignPreviewCmd.Flags().String("lead", "", "show rendered preview for a specific lead email (use with --render)")
+	campaignUpdateCmd.Flags().String("sequence", "", "path to new sequence YAML file")
+	campaignUpdateCmd.Flags().String("send-window-start", "", "send window start (HH:MM)")
+	campaignUpdateCmd.Flags().String("send-window-end", "", "send window end (HH:MM)")
+	campaignUpdateCmd.Flags().String("send-days", "", "send days: numbers (0=Sun,1=Mon,...,6=Sat) or names (mon,tue,wed)")
+	campaignUpdateCmd.Flags().String("timezone", "", "campaign default timezone (e.g. America/New_York); leads with schedule_timezone keep their override")
+	campaignUpdateCmd.Flags().Int("min-gap", 0, "minimum seconds between sends")
+	campaignUpdateCmd.Flags().Int("max-gap", 0, "maximum seconds between sends")
+	campaignCloneCmd.Flags().String("name", "", "new campaign name")
+	campaignCloneCmd.Flags().String("leads", "", "path to leads CSV file (optional per-lead schedule_timezone column supported)")
+	campaignCloneCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads; optional per-lead schedule_timezone column supported)")
+	campaignCloneCmd.Flags().String("accounts", "", "comma-separated account emails (default: reuse source accounts)")
+	campaignAddLeadsCmd.Flags().String("leads", "", "path to leads CSV file (optional per-lead schedule_timezone column supported)")
+	campaignAddLeadsCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads; optional per-lead schedule_timezone column supported)")
+	campaignValidateLeadsCmd.Flags().String("leads", "", "path to leads CSV file")
+	campaignValidateLeadsCmd.Flags().String("leads-inline", "", "leads CSV content (alternative to --leads)")
+	campaignValidateLeadsCmd.Flags().Bool("allow-free-email", false, "allow Gmail/free-mail domains to pass even though exact mailboxes are not SMTP-verified")
+	campaignValidateLeadsCmd.Flags().Bool("allow-catch-all", false, "allow catch-all domains to pass even though exact mailboxes are not verified")
+	campaignValidateLeadsCmd.Flags().Bool("allow-unknown", false, "allow inconclusive SMTP checks to pass")
+	campaignValidateLeadsCmd.Flags().Bool("no-strict-exit", false, "exit 0 even when rows require manual review or fail")
+	campaignValidateLeadsCmd.Flags().Int("timeout", 10, "SMTP connection/command timeout in seconds")
+	campaignRetryCmd.Flags().Int("step", 0, "only retry failed sends for this step number")
+	campaignActivateCmd.Flags().Bool("send-now", false, "set all pending sends to now so they send immediately")
+	campaignCmd.AddCommand(campaignCreateCmd, campaignListCmd, campaignPreviewCmd, campaignActivateCmd, campaignPauseCmd, campaignResumeCmd, campaignStatusCmd, campaignDeleteCmd, campaignRemoveLeadCmd, campaignUpdateCmd, campaignCloneCmd, campaignAddLeadsCmd, campaignValidateLeadsCmd, campaignInitCmd, campaignRetryCmd, campaignSendNowCmd)
+
+	tickCmd.Flags().Bool("dry-run", false, "show what would be sent without actually sending")
+	tickCmd.Flags().Bool("now", false, "ignore send_at timestamps and send all pending emails immediately")
+
+	inboxBackfillCmd.Flags().Int("limit", 100, "maximum missing inbound reply/unsubscribe events to scan")
+	inboxBackfillCmd.Flags().String("since", "", "only backfill inbound events since YYYY-MM-DD, RFC3339, or duration like 30d")
+	inboxBackfillCmd.Flags().Bool("dry-run", false, "show how many snapshots would be backfilled without inserting")
+	inboxBackfillCmd.Flags().Bool("no-sent", false, "only backfill inbound messages, not related sent messages")
+	inboxReplyCmd.Flags().Int64("campaign", 0, "campaign ID containing the stored thread")
+	inboxReplyCmd.Flags().Int64("lead", 0, "lead ID containing the stored thread")
+	inboxReplyCmd.Flags().String("body-file", "", "path to the exact plain-text reply body")
+	inboxReplyCmd.Flags().String("subject", "", "subject override (default: reply to latest subject)")
+	inboxReplyCmd.Flags().Bool("reply-all", false, "include non-sender To/Cc participants from the latest inbound message")
+	inboxReplyCmd.Flags().Bool("send", false, "send the previewed reply; omitted means preview only")
+	inboxReplyCmd.Flags().String("confirm-to", "", "exact primary recipient required with --send")
+	inboxReplyCmd.Flags().String("confirm-cc", "", "exact comma-separated Cc recipients required with --send --reply-all")
+	inboxReplyCmd.Flags().String("idempotency-key", "", "operator key for an intentional new attempt; normally generated from exact content")
+	inboxReplyCmd.Flags().Bool("stored-only", false, "preview stored snapshots without provider refresh (sending is blocked)")
+	for _, command := range []*cobra.Command{inboxSyncCmd, inboxShowCmd} {
+		command.Flags().Int64("campaign", 0, "campaign ID containing the stored thread")
+		command.Flags().Int64("lead", 0, "lead ID containing the stored thread")
+		command.Flags().String("thread", "", "specific provider thread ID (default: latest stored thread)")
+	}
+	inboxSyncCmd.Flags().Bool("dry-run", false, "fetch and report missing messages without storing them")
+	inboxAuditCmd.Flags().String("since", "120d", "earliest provider message date (YYYY-MM-DD, RFC3339, or duration like 30d)")
+	inboxAuditCmd.Flags().Bool("apply", false, "store provider-confirmed missing thread messages without sending email")
+	inboxReconcileCmd.Flags().String("since", "30d", "earliest provider message date (YYYY-MM-DD, RFC3339, or duration like 30d)")
+	inboxReconcileCmd.Flags().Bool("notify-errors", false, "send a Discord operational alert when reconciliation fails")
+	inboxReconcileCmd.Flags().Duration("lock-wait", 0, "wait this long for an active tick to finish (for example 10m)")
+	inboxFollowupsCmd.Flags().String("since", "120d", "earliest candidate/provider message date (YYYY-MM-DD, RFC3339, or duration like 30d)")
+	inboxFollowupsCmd.Flags().String("min-age", "7d", "minimum age of our latest unanswered response (for example 7d or 168h)")
+	inboxFollowupsCmd.Flags().Int64("campaign", 0, "only list candidates from this campaign ID")
+	inboxFollowupsCmd.Flags().Int("max-followups", 0, "maximum prior revival follow-ups allowed after the latest inbound reply")
+	inboxFollowupsCmd.Flags().Int("limit", 20, "maximum candidates to return")
+	inboxFollowupsCmd.Flags().Bool("reconcile", false, "import provider-confirmed missing messages and verify clean state before listing")
+	inboxFollowupsCmd.Flags().Bool("show-thread", false, "print each candidate's complete stored thread")
+	inboxShowCmd.Flags().Int("limit", 100, "maximum stored messages to print")
+	inboxShowCmd.Flags().Bool("stored-only", false, "print stored snapshots without refreshing the provider")
+	inboxCmd.AddCommand(inboxBackfillCmd, inboxReplyCmd, inboxSyncCmd, inboxShowCmd, inboxAuditCmd, inboxReconcileCmd, inboxFollowupsCmd)
+
+	statsCmd.Flags().Bool("leads", false, "show per-lead breakdown")
+	statsCmd.Flags().Bool("variants", false, "show per-variant A/B test results")
+
+	logCmd.Flags().Int("limit", 20, "number of events to show")
+
+	rootCmd.AddCommand(initCmd, doctorCmd, accountCmd, leadCmd, campaignCmd, tickCmd, inboxCmd, statsCmd, logCmd)
+}
+
+func main() {
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
+}

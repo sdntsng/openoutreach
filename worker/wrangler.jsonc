@@ -1,0 +1,49 @@
+{
+  "name": "openoutreach",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "containers": [
+    {
+      "class_name": "OutreachContainer",
+      "image": "../Dockerfile",
+      "max_instances": 1,
+      "instance_type": "basic"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "OUTREACH",
+        "class_name": "OutreachContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["OutreachContainer"]
+    }
+  ],
+  "triggers": {
+    "crons": ["*/2 * * * *"]
+  },
+  "assets": {
+    "directory": "../web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api/*",
+      "/mcp/*",
+      "/internal/*",
+      "/t/*",
+      "/oauth/*"
+    ]
+  },
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "PUBLIC_BASE_URL": "http://localhost:8787"
+  }
+}

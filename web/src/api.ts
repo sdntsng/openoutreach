@@ -1,0 +1,250 @@
+const BASE = "/api/v1";
+
+export class ApiError extends Error {
+  status: number;
+  body: unknown;
+  constructor(status: number, body: unknown) {
+    const msg =
+      typeof body === "object" &&
+      body &&
+      "error" in body &&
+      typeof (body as { error?: { message?: string } }).error?.message === "string"
+        ? (body as { error: { message: string } }).error.message
+        : `HTTP ${status}`;
+    super(msg);
+    this.status = status;
+    this.body = body;
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: {
+      Accept: "application/json",
+      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...init?.headers,
+    },
+  });
+  const text = await res.text();
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { raw: text };
+    }
+  }
+  if (!res.ok) throw new ApiError(res.status, data);
+  if (
+    data &&
+    typeof data === "object" &&
+    "data" in data &&
+    (data as { data: unknown }).data !== undefined
+  ) {
+    return (data as { data: T }).data;
+  }
+  return data as T;
+}
+
+export type Period = "today" | "7d" | "30d" | "all";
+
+export interface OverviewStats {
+  sent: number;
+  replies: number;
+  reply_rate: number;
+  positive_replies?: number;
+  bounces: number;
+  approx_opens: number;
+  range?: string;
+  note?: string;
+}
+
+export interface Account {
+  id: string | number;
+  email: string;
+  status: string;
+  daily_limit?: number;
+  provider?: string;
+  workspace_id?: string;
+  oauth_health?: string;
+  sent_today?: number;
+}
+
+export interface Campaign {
+  id: string | number;
+  name: string;
+  status: string;
+  workspace_id?: string;
+  leads?: number;
+  sent?: number;
+  replies?: number;
+  reply_rate?: number;
+  bounces?: number;
+  approx_opens?: number;
+  next_send?: string;
+  created_at?: string;
+}
+
+export interface CampaignStats {
+  campaign?: string;
+  sent?: number;
+  replies?: number;
+  bounces?: number;
+  approx_opens?: number;
+  reply_rate?: number;
+  steps?: unknown;
+  variants?: unknown;
+  leads?: unknown;
+  note?: string;
+}
+
+export interface Lead {
+  id: string | number;
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  company?: string;
+  domain?: string;
+  global_status?: string;
+}
+
+export interface InboxThread {
+  campaign_id: number;
+  lead_id: number;
+  contact?: string;
+  company?: string;
+  campaign?: string;
+  sender?: string;
+  subject?: string;
+  latest_message?: string;
+  classification?: string;
+  timestamp?: string;
+}
+
+export interface ThreadMessage {
+  id?: number;
+  direction?: string;
+  from_email?: string;
+  subject?: string;
+  text_body?: string;
+  display_body?: string;
+  occurred_at?: string;
+}
+
+export const api = {
+  overview: (period: Period) => {
+    const range = period === "all" ? "" : period;
+    const qs = range ? `?range=${range}` : "";
+    return request<OverviewStats>(`/overview${qs}`);
+  },
+
+  listAccounts: () => request<{ accounts: Account[] }>("/accounts"),
+
+  startGoogleOAuth: () =>
+    request<{ authorize_url?: string; status?: string; email?: string }>(
+      "/accounts/google/oauth/start",
+      { method: "POST", body: "{}" },
+    ),
+
+  listCampaigns: () => request<{ campaigns: Campaign[] }>("/campaigns"),
+
+  getCampaign: (id: string | number) => request<Record<string, unknown>>(`/campaigns/${id}`),
+
+  getCampaignStats: (id: string | number) =>
+    request<CampaignStats>(`/campaigns/${id}/stats`),
+
+  getCampaignPreview: (id: string | number) =>
+    request<unknown>(`/campaigns/${id}/preview?render=1`),
+
+  createCampaign: (body: {
+    name: string;
+    sequence_yaml?: string;
+    leads_csv?: string;
+    accounts?: string[];
+    account_ids?: Array<string | number>;
+    open_tracking?: boolean;
+    draft_only?: boolean;
+  }) =>
+    request<{
+      campaign_id: number;
+      status: string;
+      name: string;
+      lead_count?: number;
+      next_actions?: string[];
+    }>("/campaigns", {
+      method: "POST",
+      body: JSON.stringify({
+        name: body.name,
+        sequence_yaml: body.sequence_yaml,
+        leads_csv: body.leads_csv,
+        accounts: body.accounts || [],
+        open_tracking: body.open_tracking,
+        draft_only: body.draft_only ?? true,
+      }),
+    }),
+
+  activateCampaign: (id: string | number) =>
+    request<unknown>(`/campaigns/${id}/activate`, {
+      method: "POST",
+      body: JSON.stringify({ confirm: true }),
+    }),
+
+  pauseCampaign: (id: string | number) =>
+    request<unknown>(`/campaigns/${id}/pause`, { method: "POST", body: "{}" }),
+
+  resumeCampaign: (id: string | number) =>
+    request<unknown>(`/campaigns/${id}/resume`, { method: "POST", body: "{}" }),
+
+  addLeads: (id: string | number, csv: string) =>
+    request<unknown>(`/campaigns/${id}/leads`, {
+      method: "POST",
+      body: JSON.stringify({ csv }),
+    }),
+
+  validateLeads: (body: { csv: string }) =>
+    request<{
+      total: number;
+      valid: number;
+      invalid: number;
+      duplicate: number;
+      warnings: string[];
+    }>("/leads/validate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  listLeads: (q?: string) => {
+    const qs = q ? `?domain=${encodeURIComponent(q)}` : "";
+    return request<{ leads: Lead[] }>(`/leads${qs}`);
+  },
+
+  blacklistLead: (id: string | number) =>
+    request<unknown>(`/leads/${id}/blacklist`, { method: "POST", body: "{}" }),
+
+  listInbox: () => request<{ threads: InboxThread[] }>("/inbox"),
+
+  getThread: (campaignId: string | number, leadId: string | number) =>
+    request<{ messages: ThreadMessage[] }>(`/threads/${campaignId}/${leadId}`),
+
+  replyToThread: (
+    campaignId: string | number,
+    leadId: string | number,
+    body: string,
+    confirmTo: string,
+    send = false,
+  ) =>
+    request<unknown>(`/threads/${campaignId}/${leadId}/reply`, {
+      method: "POST",
+      body: JSON.stringify({ body, confirm_to: confirmTo, send }),
+    }),
+
+  workspace: () =>
+    request<{ workspace_id: string }>("/workspace"),
+};
+
+export function asArray<T>(data: { [k: string]: T[] } | T[], key: string): T[] {
+  if (Array.isArray(data)) return data;
+  const v = (data as Record<string, T[]>)[key];
+  return Array.isArray(v) ? v : [];
+}

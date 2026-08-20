@@ -1,0 +1,1599 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/andersmyrmel/cold-cli/internal"
+)
+
+var testCLIPath string
+
+func TestMain(m *testing.M) {
+	tmpDir, err := os.MkdirTemp("", "cold-cli-test-bin-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "creating temp dir for cold-cli test binary: %v\n", err)
+		os.Exit(1)
+	}
+
+	testCLIPath = filepath.Join(tmpDir, "cold-cli")
+	cmd := exec.Command("go", "build", "-o", testCLIPath, ".")
+	cmd.Dir = "."
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "building cold-cli test binary: %v\n%s", err, out)
+		_ = os.RemoveAll(tmpDir)
+		os.Exit(1)
+	}
+
+	code := m.Run()
+	_ = os.RemoveAll(tmpDir)
+	os.Exit(code)
+}
+
+// buildCLI returns the shared cold-cli test binary path.
+func buildCLI(t *testing.T) string {
+	t.Helper()
+	if testCLIPath == "" {
+		t.Fatal("cold-cli test binary was not built")
+	}
+	return testCLIPath
+}
+
+// setupTestEnv creates a temp data dir and returns the bin path and env.
+func setupTestEnv(t *testing.T) (bin string, env []string, dataDir string) {
+	t.Helper()
+	bin = buildCLI(t)
+	dataDir = t.TempDir()
+	env = append(os.Environ(), "COLD_CLI_DATA_DIR="+dataDir, "COLD_CLI_DATABASE_URL=")
+	return bin, env, dataDir
+}
+
+// runCLI runs cold-cli with the given args and env, returns stdout and exit code.
+func runCLI(t *testing.T, bin string, env []string, args ...string) (string, int) {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			t.Fatalf("running cold-cli %v: %v", args, err)
+		}
+	}
+	return string(out), exitCode
+}
+
+// --- init tests ---
+
+func TestCLI_Init(t *testing.T) {
+	bin, env, dataDir := setupTestEnv(t)
+
+	out, code := runCLI(t, bin, env, "init")
+	if code != 0 {
+		t.Fatalf("init failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Initialized cold-cli") {
+		t.Errorf("unexpected init output: %s", out)
+	}
+
+	// Verify files created
+	if _, err := os.Stat(filepath.Join(dataDir, "data.db")); err != nil {
+		t.Error("data.db not created")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "config.yml")); err != nil {
+		t.Error("config.yml not created")
+	}
+}
+
+func TestCLI_Init_JSON(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+
+	out, code := runCLI(t, bin, env, "init", "--json")
+	if code != 0 {
+		t.Fatalf("init --json failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\n%s", err, out)
+	}
+	if _, ok := result["data_dir"]; !ok {
+		t.Error("JSON missing data_dir key")
+	}
+	if _, ok := result["gws_ok"]; !ok {
+		t.Error("JSON missing gws_ok key")
+	}
+}
+
+func TestCLI_Init_Idempotent(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+
+	runCLI(t, bin, env, "init")
+	out, code := runCLI(t, bin, env, "init")
+	if code != 0 {
+		t.Fatalf("second init failed (exit %d): %s", code, out)
+	}
+}
+
+func TestCLI_EnvFileLoadsBeforeCommand(t *testing.T) {
+	bin := buildCLI(t)
+	baseDir := t.TempDir()
+	dataDir := filepath.Join(baseDir, "cold-cli-data")
+	envFile := filepath.Join(baseDir, "secrets.env")
+	if err := os.WriteFile(envFile, []byte("COLD_CLI_DATA_DIR="+dataDir+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(), "COLD_CLI_DATA_DIR=", "COLD_CLI_DATABASE_URL=")
+
+	out, code := runCLI(t, bin, env, "--env-file", envFile, "init", "--json")
+	if code != 0 {
+		t.Fatalf("init with --env-file failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\n%s", err, out)
+	}
+	if result["data_dir"] != dataDir {
+		t.Fatalf("expected data_dir %q, got %v", dataDir, result["data_dir"])
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "data.db")); err != nil {
+		t.Fatalf("data.db not created in env-file data dir: %v", err)
+	}
+}
+
+func TestCLI_EnvFileMissingFails(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+
+	out, code := runCLI(t, bin, env, "--env-file", filepath.Join(t.TempDir(), "missing.env"), "init")
+	if code == 0 {
+		t.Fatalf("expected missing --env-file to fail, got output: %s", out)
+	}
+	if !strings.Contains(out, "loading --env-file") {
+		t.Fatalf("expected --env-file error, got: %s", out)
+	}
+}
+
+func TestCLI_InboxReplyPreviewsByDefaultAndRequiresRecipientConfirmation(t *testing.T) {
+	bin, env, dataDir := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	db, err := internal.OpenDB(filepath.Join(dataDir, "data.db"))
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO accounts (email, provider, status) VALUES ('sender@example.com', 'smtp_imap', 'active')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO campaigns (name, status, sequence_file, sequence_content)
+		VALUES ('reply-test', 'completed', 'seq.yml', ?)`, "defaults:\n  from_name: Maya\nsteps:\n  - step: 1\n    subject: Hello\n    body: Initial"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO leads (email, domain) VALUES ('lead@example.com', 'example.com')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'replied')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO email_messages (
+		campaign_id, lead_id, account_id, direction, type, message_id, thread_id,
+		from_email, to_emails, subject, text_body, raw_headers, occurred_at
+	) VALUES (1, 1, 1, 'inbound', 'reply', '<reply@example.com>', '<root@example.com>',
+		'Lead <lead@example.com>', 'sender@example.com', 'Re: Hello', 'Interested',
+		'{"Message-ID":"<reply@example.com>"}', CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	bodyFile := filepath.Join(dataDir, "reply.txt")
+	if err := os.WriteFile(bodyFile, []byte("Happy to send the details."), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runCLI(t, bin, env, "inbox", "reply", "--campaign", "1", "--lead", "1", "--body-file", bodyFile, "--stored-only")
+	if code != 0 {
+		t.Fatalf("preview failed (exit %d): %s", code, out)
+	}
+	for _, expected := range []string{"PREVIEW — NOT SENT", "From: Maya <sender@example.com>", "To: lead@example.com", "Happy to send the details."} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("preview missing %q:\n%s", expected, out)
+		}
+	}
+
+	out, code = runCLI(t, bin, env, "inbox", "reply", "--campaign", "1", "--lead", "1", "--body-file", bodyFile, "--send")
+	if code == 0 || !strings.Contains(out, "--confirm-to") {
+		t.Fatalf("expected send confirmation failure, exit=%d output=%s", code, out)
+	}
+
+	out, code = runCLI(t, bin, env, "inbox", "show", "--campaign", "1", "--lead", "1", "--stored-only")
+	if code != 0 {
+		t.Fatalf("stored thread show failed (exit %d): %s", code, out)
+	}
+	for _, expected := range []string{"Thread <root@example.com> (1 messages)", "INBOUND", "Interested"} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("thread show missing %q:\n%s", expected, out)
+		}
+	}
+}
+
+func TestCLI_InboxFollowupsAndReconcileAreDiscoverable(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	out, code := runCLI(t, bin, env, "inbox", "--help")
+	if code != 0 {
+		t.Fatalf("inbox help failed (exit %d): %s", code, out)
+	}
+	for _, expected := range []string{"followups", "reconcile"} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("inbox help missing %q:\n%s", expected, out)
+		}
+	}
+
+	out, code = runCLI(t, bin, env, "inbox", "followups", "--help")
+	if code != 0 {
+		t.Fatalf("followups help failed (exit %d): %s", code, out)
+	}
+	for _, expected := range []string{"--reconcile", "--min-age", "--max-followups", "never drafts or sends"} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("followups help missing %q:\n%s", expected, out)
+		}
+	}
+}
+
+func TestParseFollowupAgeSupportsDaysAndHours(t *testing.T) {
+	for input, expected := range map[string]time.Duration{
+		"7d":   7 * 24 * time.Hour,
+		"168h": 7 * 24 * time.Hour,
+		"0d":   0,
+	} {
+		got, err := parseFollowupAge(input)
+		if err != nil || got != expected {
+			t.Fatalf("parseFollowupAge(%q) = %s, %v; want %s", input, got, err, expected)
+		}
+	}
+	if _, err := parseFollowupAge("-1d"); err == nil {
+		t.Fatal("expected negative follow-up age to fail")
+	}
+}
+
+// --- account tests ---
+
+func TestCLI_AccountAdd(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "account", "add", "--skip-auth", "test@example.com")
+	if code != 0 {
+		t.Fatalf("account add failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Added account test@example.com") {
+		t.Errorf("unexpected output: %s", out)
+	}
+}
+
+func TestCLI_AccountAdd_JSON(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "account", "add", "--skip-auth", "test@example.com", "--json")
+	if code != 0 {
+		t.Fatalf("account add --json failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if result["email"] != "test@example.com" {
+		t.Errorf("expected email test@example.com, got %v", result["email"])
+	}
+	if result["status"] != "active" {
+		t.Errorf("expected status active, got %v", result["status"])
+	}
+}
+
+func TestCLI_AccountAdd_InvalidEmail(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	_, code := runCLI(t, bin, env, "account", "add", "--skip-auth", "not-an-email")
+	if code == 0 {
+		t.Error("expected non-zero exit for invalid email")
+	}
+}
+
+func TestCLI_AccountAdd_Duplicate(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "dup@example.com")
+
+	out, code := runCLI(t, bin, env, "account", "add", "--skip-auth", "dup@example.com")
+	if code == 0 {
+		t.Error("expected non-zero exit for duplicate")
+	}
+	if !strings.Contains(out, "already exists") {
+		t.Errorf("expected 'already exists' error, got: %s", out)
+	}
+}
+
+func TestCLI_AccountAdd_DailyLimit(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "account", "add", "--skip-auth", "test@example.com", "--daily-limit", "25", "--json")
+	if code != 0 {
+		t.Fatalf("failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	json.Unmarshal([]byte(out), &result)
+	if result["daily_limit"] != float64(25) {
+		t.Errorf("expected daily_limit 25, got %v", result["daily_limit"])
+	}
+}
+
+func TestCLI_AccountAddSMTP_JSON(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env,
+		"account", "add-smtp", "sender@example.com",
+		"--smtp-host", "smtp.example.com",
+		"--smtp-password-ref", "env:MAIL_PASSWORD",
+		"--imap-host", "imap.example.com",
+		"--json",
+	)
+	if code != 0 {
+		t.Fatalf("account add-smtp --json failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if result["provider"] != internal.AccountProviderSMTPIMAP {
+		t.Errorf("expected provider %s, got %v", internal.AccountProviderSMTPIMAP, result["provider"])
+	}
+	if result["smtp_port"] != float64(465) {
+		t.Errorf("expected default smtp_port 465, got %v", result["smtp_port"])
+	}
+	if result["imap_port"] != float64(993) {
+		t.Errorf("expected default imap_port 993, got %v", result["imap_port"])
+	}
+}
+
+func TestCLI_AccountAddSMTP_RequiresConfig(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "account", "add-smtp", "sender@example.com")
+	if code == 0 {
+		t.Fatal("expected non-zero exit for missing SMTP/IMAP config")
+	}
+	if !strings.Contains(out, "smtp host is required") {
+		t.Errorf("expected smtp host validation error, got: %s", out)
+	}
+}
+
+func TestCLI_AccountUpdateSMTP_JSON(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env,
+		"account", "add-smtp", "sender@example.com",
+		"--smtp-host", "smtp.example.com",
+		"--smtp-password-ref", "env:MAIL_PASSWORD",
+		"--imap-host", "imap.example.com",
+	)
+
+	out, code := runCLI(t, bin, env,
+		"account", "update-smtp", "sender@example.com",
+		"--smtp-host", "mail.example.com",
+		"--smtp-tls", "starttls",
+		"--smtp-port", "0",
+		"--imap-password-ref", "env:IMAP_PASSWORD",
+		"--daily-limit", "25",
+		"--json",
+	)
+	if code != 0 {
+		t.Fatalf("account update-smtp --json failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if result["smtp_host"] != "mail.example.com" {
+		t.Errorf("expected updated smtp_host, got %v", result["smtp_host"])
+	}
+	if result["smtp_tls_mode"] != "starttls" {
+		t.Errorf("expected smtp_tls_mode starttls, got %v", result["smtp_tls_mode"])
+	}
+	if result["smtp_port"] != float64(587) {
+		t.Errorf("expected smtp_port 587, got %v", result["smtp_port"])
+	}
+	if result["daily_limit"] != float64(25) {
+		t.Errorf("expected daily_limit 25, got %v", result["daily_limit"])
+	}
+}
+
+func TestCLI_AccountUpdateSMTPRequiresChange(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env,
+		"account", "add-smtp", "sender@example.com",
+		"--smtp-host", "smtp.example.com",
+		"--smtp-password-ref", "env:MAIL_PASSWORD",
+		"--imap-host", "imap.example.com",
+	)
+
+	out, code := runCLI(t, bin, env, "account", "update-smtp", "sender@example.com")
+	if code == 0 {
+		t.Fatal("expected non-zero exit without changed flags")
+	}
+	if !strings.Contains(out, "no settings to update") {
+		t.Errorf("expected no settings error, got: %s", out)
+	}
+}
+
+func TestCLI_AccountAdd_MissingArg(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	_, code := runCLI(t, bin, env, "account", "add")
+	if code == 0 {
+		t.Error("expected non-zero exit for missing email arg")
+	}
+}
+
+func TestCLI_AccountList_Empty(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "account", "list")
+	if code != 0 {
+		t.Fatalf("failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "No accounts") {
+		t.Errorf("expected empty message, got: %s", out)
+	}
+}
+
+func TestCLI_AccountList(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "a@x.com")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "b@x.com")
+
+	out, code := runCLI(t, bin, env, "account", "list")
+	if code != 0 {
+		t.Fatalf("failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "a@x.com") || !strings.Contains(out, "b@x.com") {
+		t.Errorf("expected both accounts listed: %s", out)
+	}
+}
+
+func TestCLI_AccountList_JSON(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "a@x.com")
+
+	out, code := runCLI(t, bin, env, "account", "list", "--json")
+	if code != 0 {
+		t.Fatalf("failed (exit %d): %s", code, out)
+	}
+
+	var result []map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if len(result) != 1 {
+		t.Errorf("expected 1 account, got %d", len(result))
+	}
+}
+
+func TestCLI_WorkspaceScopesAccountList(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "--workspace", "brand-a", "account", "add", "--skip-auth", "sender@brand-a.example", "--json")
+	if code != 0 {
+		t.Fatalf("workspace account add failed (exit %d): %s", code, out)
+	}
+	var added map[string]any
+	if err := json.Unmarshal([]byte(out), &added); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if added["workspace_id"] != "brand-a" {
+		t.Fatalf("expected workspace_id brand-a, got %v", added["workspace_id"])
+	}
+
+	runCLI(t, bin, env, "--workspace", "brand-b", "account", "add", "--skip-auth", "sender@brand-b.example")
+
+	out, code = runCLI(t, bin, env, "--workspace", "brand-a", "account", "list")
+	if code != 0 {
+		t.Fatalf("workspace account list failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "sender@brand-a.example") {
+		t.Fatalf("expected brand-a account in list: %s", out)
+	}
+	if strings.Contains(out, "sender@brand-b.example") {
+		t.Fatalf("did not expect brand-b account in brand-a list: %s", out)
+	}
+	if !strings.Contains(out, "WORKSPACE") || !strings.Contains(out, "brand-a") {
+		t.Fatalf("expected workspace column in account list: %s", out)
+	}
+}
+
+// --- campaign tests ---
+
+func setupCampaignTestFiles(t *testing.T) (seqFile, leadsFile string) {
+	t.Helper()
+	dir := t.TempDir()
+
+	seqFile = filepath.Join(dir, "seq.yml")
+	os.WriteFile(seqFile, []byte(`
+name: Test
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello {{first_name}} at {{company}}"
+  - step: 2
+    delay: 3
+    body: "Following up..."
+`), 0644)
+
+	leadsFile = filepath.Join(dir, "leads.csv")
+	os.WriteFile(leadsFile, []byte("email,first_name,company\njohn@acme.com,John,Acme\njane@foo.com,Jane,Foo\n"), 0644)
+
+	return seqFile, leadsFile
+}
+
+func TestCLI_CampaignCreate(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "create",
+		"--name", "test-camp",
+		"--sequence", seqFile,
+		"--leads", leadsFile,
+		"--accounts", "sender@x.com")
+	if code != 0 {
+		t.Fatalf("campaign create failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Created campaign") {
+		t.Errorf("unexpected output: %s", out)
+	}
+	if !strings.Contains(out, "leads:    2") {
+		t.Errorf("expected 2 leads: %s", out)
+	}
+	if !strings.Contains(out, "sends:    4") {
+		t.Errorf("expected 4 sends (2 leads * 2 steps): %s", out)
+	}
+}
+
+func TestCLI_CampaignCreate_SendDaysOverride(t *testing.T) {
+	bin, env, dataDir := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	os.WriteFile(filepath.Join(dataDir, "config.yml"), []byte(`default_timezone: UTC
+default_daily_limit: 50
+min_gap_seconds: 90
+max_gap_seconds: 140
+send_window_start: "09:00"
+send_window_end: "17:00"
+send_days: "1,2,3,4,5"
+`), 0644)
+
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	dir := t.TempDir()
+	seqFile := filepath.Join(dir, "seq.yml")
+	os.WriteFile(seqFile, []byte(`
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi"
+    body: "Hello"
+`), 0644)
+	leadsFile := filepath.Join(dir, "leads.csv")
+	os.WriteFile(leadsFile, []byte("email\njohn@acme.com\n"), 0644)
+
+	out, code := runCLI(t, bin, env, "campaign", "create",
+		"--name", "weekend-camp",
+		"--sequence", seqFile,
+		"--leads", leadsFile,
+		"--accounts", "sender@x.com",
+		"--start-date", "2099-06-13",
+		"--send-days", "0,1,2,3,4,5,6")
+	if code != 0 {
+		t.Fatalf("campaign create with send-days override failed (exit %d): %s", code, out)
+	}
+
+	out, code = runCLI(t, bin, env, "campaign", "preview", "weekend-camp")
+	if code != 0 {
+		t.Fatalf("campaign preview failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "2099-06-13") {
+		t.Errorf("expected preview to keep the Saturday start date, got: %s", out)
+	}
+}
+
+func TestCLI_CampaignCreate_JSON(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "create",
+		"--name", "test-camp",
+		"--sequence", seqFile,
+		"--leads", leadsFile,
+		"--accounts", "sender@x.com",
+		"--json")
+	if code != 0 {
+		t.Fatalf("failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	json.Unmarshal([]byte(out), &result)
+	if result["status"] != "draft" {
+		t.Errorf("expected status draft, got %v", result["status"])
+	}
+	if result["leads"] != float64(2) {
+		t.Errorf("expected 2 leads, got %v", result["leads"])
+	}
+}
+
+func TestCLI_CampaignCreate_MissingFlags(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	_, code := runCLI(t, bin, env, "campaign", "create", "--name", "test")
+	if code == 0 {
+		t.Error("expected error for missing required flags")
+	}
+}
+
+func TestCLI_CampaignCreate_DuplicateName(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "dup", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "create", "--name", "dup", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+	if code == 0 {
+		t.Error("expected error for duplicate campaign name")
+	}
+	if !strings.Contains(out, "already exists") {
+		t.Errorf("expected 'already exists' error: %s", out)
+	}
+}
+
+func TestCLI_CampaignCreate_BadAccount(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "campaign", "create", "--name", "test", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "nonexistent@x.com")
+	if code == 0 {
+		t.Error("expected error for bad account")
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("expected 'not found' error: %s", out)
+	}
+}
+
+func TestCLI_CampaignCreateUsesWorkspaceEnv(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "--workspace", "brand-a", "account", "add", "--skip-auth", "sender@brand-a.example")
+	runCLI(t, bin, env, "--workspace", "brand-b", "account", "add", "--skip-auth", "sender@brand-b.example")
+
+	workspaceEnv := append(env, "COLD_CLI_WORKSPACE_ID=brand-a")
+	out, code := runCLI(t, bin, workspaceEnv, "campaign", "create",
+		"--name", "wrong-workspace",
+		"--sequence", seqFile,
+		"--leads", leadsFile,
+		"--accounts", "sender@brand-b.example")
+	if code == 0 {
+		t.Fatalf("expected cross-workspace campaign create to fail: %s", out)
+	}
+	if !strings.Contains(out, "workspace brand-a") {
+		t.Fatalf("expected workspace error, got: %s", out)
+	}
+
+	out, code = runCLI(t, bin, workspaceEnv, "campaign", "create",
+		"--name", "brand-a-campaign",
+		"--sequence", seqFile,
+		"--leads", leadsFile,
+		"--accounts", "sender@brand-a.example",
+		"--json")
+	if code != 0 {
+		t.Fatalf("campaign create in workspace failed (exit %d): %s", code, out)
+	}
+	var created map[string]any
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if created["workspace_id"] != "brand-a" {
+		t.Fatalf("expected campaign workspace_id brand-a, got %v", created["workspace_id"])
+	}
+}
+
+func TestCLI_CampaignCreate_MissingTemplateField(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	dir := t.TempDir()
+	seqFile := filepath.Join(dir, "seq.yml")
+	os.WriteFile(seqFile, []byte(`
+steps:
+  - step: 1
+    subject: "Hi {{first_name}} at {{title}}"
+    body: "Hello {{first_name}}"
+`), 0644)
+	leadsFile := filepath.Join(dir, "leads.csv")
+	os.WriteFile(leadsFile, []byte("email,first_name\njohn@acme.com,John\n"), 0644)
+
+	out, code := runCLI(t, bin, env, "campaign", "create", "--name", "test", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+	if code == 0 {
+		t.Error("expected error for missing template field 'title'")
+	}
+	if !strings.Contains(out, "title") {
+		t.Errorf("expected error mentioning 'title': %s", out)
+	}
+}
+
+func TestCLI_CampaignPreview(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "preview", "test-camp")
+	if code != 0 {
+		t.Fatalf("preview failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "john@acme.com") {
+		t.Errorf("expected john in preview: %s", out)
+	}
+	if !strings.Contains(out, "jane@foo.com") {
+		t.Errorf("expected jane in preview: %s", out)
+	}
+	if !strings.Contains(out, "4 sends") {
+		t.Errorf("expected '4 sends' in preview: %s", out)
+	}
+}
+
+func TestCLI_CampaignPreview_NotFound(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "campaign", "preview", "nonexistent")
+	if code == 0 {
+		t.Error("expected error for nonexistent campaign")
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("expected 'not found' error: %s", out)
+	}
+}
+
+func TestCLI_CampaignActivate(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "activate", "test-camp")
+	if code != 0 {
+		t.Fatalf("activate failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "now active") {
+		t.Errorf("unexpected output: %s", out)
+	}
+}
+
+func TestCLI_CampaignActivate_WrongState(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "activate", "test-camp")
+
+	// Try to activate again (already active)
+	out, code := runCLI(t, bin, env, "campaign", "activate", "test-camp")
+	if code == 0 {
+		t.Error("expected error for activating already active campaign")
+	}
+	if !strings.Contains(out, "cannot activate") {
+		t.Errorf("expected state transition error: %s", out)
+	}
+}
+
+func TestCLI_CampaignPauseResume(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "activate", "test-camp")
+
+	// Pause
+	out, code := runCLI(t, bin, env, "campaign", "pause", "test-camp")
+	if code != 0 {
+		t.Fatalf("pause failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "now paused") {
+		t.Errorf("unexpected output: %s", out)
+	}
+
+	// Resume
+	out, code = runCLI(t, bin, env, "campaign", "resume", "test-camp")
+	if code != 0 {
+		t.Fatalf("resume failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "now active") {
+		t.Errorf("unexpected output: %s", out)
+	}
+}
+
+func TestCLI_CampaignStatus(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "status", "test-camp")
+	if code != 0 {
+		t.Fatalf("status failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "draft") {
+		t.Errorf("expected draft status: %s", out)
+	}
+	if !strings.Contains(out, "leads:       2") {
+		t.Errorf("expected 2 leads: %s", out)
+	}
+	if !strings.Contains(out, "pending") {
+		t.Errorf("expected pending sends: %s", out)
+	}
+}
+
+func TestCLI_CampaignStatus_JSON(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "status", "test-camp", "--json")
+	if code != 0 {
+		t.Fatalf("failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if result["leads"] != float64(2) {
+		t.Errorf("expected 2 leads, got %v", result["leads"])
+	}
+}
+
+// --- lead tests ---
+
+func TestCLI_LeadBlacklist(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "lead", "blacklist", "john@acme.com")
+	if code != 0 {
+		t.Fatalf("blacklist failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Blacklisted john@acme.com") {
+		t.Errorf("unexpected output: %s", out)
+	}
+	if !strings.Contains(out, "sends cancelled") {
+		t.Errorf("expected cancelled sends: %s", out)
+	}
+}
+
+func TestCLI_LeadBlacklist_Domain(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "lead", "blacklist", "acme.com", "--json")
+	if code != 0 {
+		t.Fatalf("blacklist domain failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	json.Unmarshal([]byte(out), &result)
+	if result["is_domain"] != true {
+		t.Errorf("expected is_domain=true, got %v", result["is_domain"])
+	}
+	if result["blacklisted_leads"] != float64(1) {
+		t.Errorf("expected 1 blacklisted lead (john@acme.com), got %v", result["blacklisted_leads"])
+	}
+}
+
+func TestCLI_LeadBlacklist_NotFound(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "lead", "blacklist", "nobody@x.com")
+	if code == 0 {
+		t.Error("expected error for blacklisting nonexistent lead")
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("expected 'not found' error: %s", out)
+	}
+}
+
+func TestCLI_LeadPause(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "lead", "pause", "john@acme.com")
+	if code != 0 {
+		t.Fatalf("pause failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Paused john@acme.com") {
+		t.Errorf("unexpected output: %s", out)
+	}
+}
+
+func TestCLI_LeadPause_NotFound(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "lead", "pause", "nobody@x.com")
+	if code == 0 {
+		t.Error("expected error for pausing nonexistent lead")
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("expected 'not found' error: %s", out)
+	}
+}
+
+// --- tick tests ---
+
+func TestCLI_Tick_DryRun(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "tick", "--dry-run", "--json")
+	if code != 0 {
+		t.Fatalf("tick dry-run failed (exit %d): %s", code, out)
+	}
+
+	var result map[string]any
+	json.Unmarshal([]byte(out), &result)
+	if result["dry_run"] != true {
+		t.Errorf("expected dry_run=true, got %v", result["dry_run"])
+	}
+}
+
+// --- stats tests ---
+
+func TestCLI_Stats_Empty(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "stats")
+	if code != 0 {
+		t.Fatalf("stats failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "No campaigns") {
+		t.Errorf("expected empty state message: %s", out)
+	}
+}
+
+func TestCLI_Stats_WithCampaign(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "stats")
+	if code != 0 {
+		t.Fatalf("stats failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "test-camp") {
+		t.Errorf("expected campaign name in stats: %s", out)
+	}
+}
+
+func TestCLI_Stats_PerCampaign(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "stats", "test-camp")
+	if code != 0 {
+		t.Fatalf("stats failed (exit %d): %s", code, out)
+	}
+	// No events yet, so "no events" message
+	if !strings.Contains(out, "no events") {
+		t.Errorf("expected 'no events' message: %s", out)
+	}
+}
+
+func TestCLI_Stats_PerLead(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "test-camp", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "stats", "test-camp", "--leads")
+	if code != 0 {
+		t.Fatalf("stats --leads failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "john@acme.com") {
+		t.Errorf("expected john in lead stats: %s", out)
+	}
+	if !strings.Contains(out, "jane@foo.com") {
+		t.Errorf("expected jane in lead stats: %s", out)
+	}
+}
+
+func TestCLI_Stats_NotFound(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "stats", "nonexistent")
+	if code == 0 {
+		t.Error("expected error for nonexistent campaign")
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("expected 'not found' error: %s", out)
+	}
+}
+
+// --- campaign list/delete/update tests ---
+
+func TestCLI_CampaignList_Empty(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "campaign", "list")
+	if code != 0 {
+		t.Fatalf("failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "No campaigns") {
+		t.Errorf("expected empty message: %s", out)
+	}
+}
+
+func TestCLI_CampaignList(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "camp-a", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "camp-b", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "list")
+	if code != 0 {
+		t.Fatalf("failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "camp-a") || !strings.Contains(out, "camp-b") {
+		t.Errorf("expected both campaigns: %s", out)
+	}
+}
+
+func TestCLI_CampaignList_JSON(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "camp-a", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "list", "--json")
+	if code != 0 {
+		t.Fatalf("failed (exit %d): %s", code, out)
+	}
+	var result []map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(result) != 1 {
+		t.Errorf("expected 1 campaign, got %d", len(result))
+	}
+}
+
+func TestCLI_CampaignDelete(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "to-delete", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "delete", "to-delete")
+	if code != 0 {
+		t.Fatalf("delete failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Deleted") {
+		t.Errorf("expected 'Deleted' message: %s", out)
+	}
+
+	// Verify it's gone
+	out, code = runCLI(t, bin, env, "campaign", "status", "to-delete")
+	if code == 0 {
+		t.Error("expected error for deleted campaign")
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("expected 'not found': %s", out)
+	}
+}
+
+func TestCLI_CampaignDelete_NotFound(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "campaign", "delete", "nonexistent")
+	if code == 0 {
+		t.Error("expected error for nonexistent campaign")
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("expected 'not found': %s", out)
+	}
+}
+
+func TestCLI_CampaignDelete_Recreate(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	// Create, delete, recreate with same name
+	runCLI(t, bin, env, "campaign", "create", "--name", "reuse", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "delete", "reuse")
+	out, code := runCLI(t, bin, env, "campaign", "create", "--name", "reuse", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+	if code != 0 {
+		t.Fatalf("recreate failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Created campaign") {
+		t.Errorf("expected 'Created': %s", out)
+	}
+}
+
+func TestCLI_CampaignUpdate(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "updatable", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "update", "updatable", "--send-days", "2,3,4")
+	if code != 0 {
+		t.Fatalf("update failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Updated") {
+		t.Errorf("expected 'Updated': %s", out)
+	}
+
+	// Verify via status
+	out, code = runCLI(t, bin, env, "campaign", "status", "updatable", "--json")
+	if code != 0 {
+		t.Fatalf("status failed (exit %d): %s", code, out)
+	}
+}
+
+func TestCLI_CampaignUpdate_ReschedulesUnsentFirstStepFromStartDate(t *testing.T) {
+	bin, env, dataDir := setupTestEnv(t)
+	dir := t.TempDir()
+
+	seqFile := filepath.Join(dir, "seq.yml")
+	os.WriteFile(seqFile, []byte(`
+name: Test
+defaults:
+  from_name: "Test"
+steps:
+  - step: 1
+    delay: 0
+    subject: "Hi {{first_name}}"
+    body: "Hello {{first_name}}"
+  - step: 2
+    delay: 3
+    body: "Following up..."
+`), 0644)
+
+	leadsFile := filepath.Join(dir, "leads.csv")
+	os.WriteFile(leadsFile, []byte("email,first_name\njohn@acme.com,John\n"), 0644)
+
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "create",
+		"--name", "future-update",
+		"--sequence", seqFile,
+		"--leads", leadsFile,
+		"--accounts", "sender@x.com",
+		"--start-date", "2099-06-13",
+		"--send-days", "2,4")
+	if code != 0 {
+		t.Fatalf("campaign create failed (exit %d): %s", code, out)
+	}
+
+	db, err := internal.OpenDB(filepath.Join(dataDir, "data.db"))
+	if err != nil {
+		t.Fatalf("opening db: %v", err)
+	}
+	defer db.Close()
+
+	var step1Before string
+	db.QueryRow(`SELECT send_at FROM scheduled_sends
+		WHERE campaign_id = (SELECT id FROM campaigns WHERE name = 'future-update')
+		AND step_number = 1`).Scan(&step1Before)
+	if !strings.Contains(step1Before, "2099-06-16") {
+		t.Fatalf("expected initial step 1 on 2099-06-16, got %q", step1Before)
+	}
+
+	var step2Before string
+	db.QueryRow(`SELECT send_at FROM scheduled_sends
+		WHERE campaign_id = (SELECT id FROM campaigns WHERE name = 'future-update')
+		AND step_number = 2`).Scan(&step2Before)
+	if !strings.Contains(step2Before, "2099-06-23") {
+		t.Fatalf("expected initial step 2 on 2099-06-23, got %q", step2Before)
+	}
+
+	out, code = runCLI(t, bin, env, "campaign", "update", "future-update", "--send-days", "0,1,2,3,4,5,6")
+	if code != 0 {
+		t.Fatalf("campaign update failed (exit %d): %s", code, out)
+	}
+
+	var step1After string
+	db.QueryRow(`SELECT send_at FROM scheduled_sends
+		WHERE campaign_id = (SELECT id FROM campaigns WHERE name = 'future-update')
+		AND step_number = 1`).Scan(&step1After)
+	if !strings.Contains(step1After, "2099-06-13") {
+		t.Fatalf("expected step 1 to move to the stored start date, got %q", step1After)
+	}
+
+	var step2After string
+	db.QueryRow(`SELECT send_at FROM scheduled_sends
+		WHERE campaign_id = (SELECT id FROM campaigns WHERE name = 'future-update')
+		AND step_number = 2`).Scan(&step2After)
+	if !strings.Contains(step2After, "2099-06-16") {
+		t.Fatalf("expected step 2 to chain from the new step 1, got %q", step2After)
+	}
+}
+
+func TestCLI_CampaignUpdate_NoFlags(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "no-update", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "update", "no-update")
+	if code == 0 {
+		t.Error("expected error when no flags provided")
+	}
+	if !strings.Contains(out, "no settings") {
+		t.Errorf("expected guidance message: %s", out)
+	}
+}
+
+func TestCLI_CampaignUpdate_NotFound(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	out, code := runCLI(t, bin, env, "campaign", "update", "nonexistent", "--send-days", "1,2,3")
+	if code == 0 {
+		t.Error("expected error for nonexistent campaign")
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("expected 'not found': %s", out)
+	}
+}
+
+func TestCLI_CampaignPreview_ShowsSchedule(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "preview-note", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "preview", "preview-note")
+	if code != 0 {
+		t.Fatalf("preview failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "SEND AT") || !strings.Contains(out, "STEP") {
+		t.Errorf("expected schedule table in preview: %s", out)
+	}
+}
+
+func TestCLI_CampaignHelp_NewCommands(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+
+	out, code := runCLI(t, bin, env, "campaign", "--help")
+	if code != 0 {
+		t.Fatalf("help failed (exit %d): %s", code, out)
+	}
+	for _, sub := range []string{"list", "delete", "update"} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("campaign help missing new subcommand %q: %s", sub, out)
+		}
+	}
+}
+
+// --- error handling tests ---
+
+func TestCLI_NotInitialized(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	// Don't run init
+
+	out, code := runCLI(t, bin, env, "account", "add", "--skip-auth", "test@x.com")
+	if code == 0 {
+		t.Error("expected error when not initialized")
+	}
+	if !strings.Contains(out, "cold-cli init") {
+		t.Errorf("expected guidance to run init: %s", out)
+	}
+}
+
+func TestCLI_Help(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+
+	out, code := runCLI(t, bin, env, "--help")
+	if code != 0 {
+		t.Fatalf("help failed (exit %d): %s", code, out)
+	}
+	for _, cmd := range []string{"init", "account", "campaign", "tick", "stats", "lead"} {
+		if !strings.Contains(out, cmd) {
+			t.Errorf("help missing command %q: %s", cmd, out)
+		}
+	}
+}
+
+func TestCLI_CampaignHelp(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+
+	out, code := runCLI(t, bin, env, "campaign", "--help")
+	if code != 0 {
+		t.Fatalf("help failed (exit %d): %s", code, out)
+	}
+	for _, sub := range []string{"create", "preview", "activate", "pause", "resume", "status", "validate-leads"} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("campaign help missing subcommand %q: %s", sub, out)
+		}
+	}
+}
+
+func TestCLI_CampaignValidateLeadsFreeMailRequiresReview(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+
+	out, code := runCLI(t, bin, env,
+		"campaign", "validate-leads",
+		"--leads-inline", "email,first_name\nperson@gmail.com,Person\n",
+		"--json",
+	)
+	if code == 0 {
+		t.Fatalf("expected strict validation to fail, got exit 0: %s", out)
+	}
+	if !strings.Contains(out, `"manual_review": 1`) {
+		t.Fatalf("expected manual_review count in JSON output, got: %s", out)
+	}
+
+	out, code = runCLI(t, bin, env,
+		"campaign", "validate-leads",
+		"--leads-inline", "email,first_name\nperson@gmail.com,Person\n",
+		"--allow-free-email",
+		"--json",
+	)
+	if code != 0 {
+		t.Fatalf("expected allowed free-mail validation to pass (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, `"pass": 1`) {
+		t.Fatalf("expected pass count in JSON output, got: %s", out)
+	}
+}
+
+func TestCLI_AccountHelpIncludesProviders(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+
+	out, code := runCLI(t, bin, env, "account", "--help")
+	if code != 0 {
+		t.Fatalf("account help failed (exit %d): %s", code, out)
+	}
+	for _, want := range []string{"Google Workspace/Gmail", "SMTP/IMAP", "add-smtp", "update-smtp", "verify"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("account help missing %q: %s", want, out)
+		}
+	}
+
+	out, code = runCLI(t, bin, env, "account", "add-smtp", "--help")
+	if code != 0 {
+		t.Fatalf("account add-smtp help failed (exit %d): %s", code, out)
+	}
+	for _, want := range []string{"--smtp-host", "--smtp-password-ref", "--imap-host", "env:NAME"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("account add-smtp help missing %q: %s", want, out)
+		}
+	}
+}
+
+// --- campaign init tests ---
+
+func TestCLI_CampaignInit(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+
+	dir := t.TempDir()
+	out, code := runCLI(t, bin, env, "campaign", "init", dir)
+	if code != 0 {
+		t.Fatalf("campaign init failed (exit %d): %s", code, out)
+	}
+
+	// Verify sequence.yml was created
+	if _, err := os.Stat(filepath.Join(dir, "sequence.yml")); err != nil {
+		t.Error("sequence.yml not created")
+	}
+	// Verify leads.csv was created
+	if _, err := os.Stat(filepath.Join(dir, "leads.csv")); err != nil {
+		t.Error("leads.csv not created")
+	}
+}
+
+// --- account update tests ---
+
+func TestCLI_AccountUpdate(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "account", "update", "sender@x.com", "--daily-limit", "25")
+	if code != 0 {
+		t.Fatalf("account update failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "Updated") {
+		t.Errorf("expected 'Updated' in output, got: %s", out)
+	}
+}
+
+// --- campaign preview/status by ID tests ---
+
+func TestCLI_CampaignPreviewByID(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "by-id-preview", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	// Preview by numeric ID instead of name
+	out, code := runCLI(t, bin, env, "campaign", "preview", "1")
+	if code != 0 {
+		t.Fatalf("preview by ID failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "john@acme.com") {
+		t.Errorf("expected john in preview: %s", out)
+	}
+	if !strings.Contains(out, "jane@foo.com") {
+		t.Errorf("expected jane in preview: %s", out)
+	}
+}
+
+func TestCLI_CampaignStatusByID(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "by-id-status", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	// Status by numeric ID instead of name
+	out, code := runCLI(t, bin, env, "campaign", "status", "1")
+	if code != 0 {
+		t.Fatalf("status by ID failed (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "draft") {
+		t.Errorf("expected draft status: %s", out)
+	}
+	if !strings.Contains(out, "by-id-status") {
+		t.Errorf("expected campaign name in output: %s", out)
+	}
+}
+
+// --- campaign start-date tests ---
+
+func TestCLI_CampaignStartDate(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "create",
+		"--name", "start-date-test",
+		"--sequence", seqFile,
+		"--leads", leadsFile,
+		"--accounts", "sender@x.com",
+		"--start-date", "2099-04-01")
+	if code != 0 {
+		t.Fatalf("campaign create with start-date failed (exit %d): %s", code, out)
+	}
+
+	// Preview to see scheduled send dates
+	out, code = runCLI(t, bin, env, "campaign", "preview", "start-date-test")
+	if code != 0 {
+		t.Fatalf("preview failed (exit %d): %s", code, out)
+	}
+	// Send dates should be in the requested future month, not the prior month.
+	if !strings.Contains(out, "2099-04") {
+		t.Errorf("expected send dates in April 2099, got: %s", out)
+	}
+	if strings.Contains(out, "2099-03") {
+		t.Errorf("expected no send dates in March 2099, but found them: %s", out)
+	}
+}
+
+// --- campaign preview --render tests ---
+
+func TestCLI_CampaignPreviewRender(t *testing.T) {
+	bin, env, _ := setupTestEnv(t)
+	seqFile, leadsFile := setupCampaignTestFiles(t)
+	runCLI(t, bin, env, "init")
+	runCLI(t, bin, env, "account", "add", "--skip-auth", "sender@x.com")
+	runCLI(t, bin, env, "campaign", "create", "--name", "render-test", "--sequence", seqFile, "--leads", leadsFile, "--accounts", "sender@x.com")
+
+	out, code := runCLI(t, bin, env, "campaign", "preview", "render-test", "--render")
+	if code != 0 {
+		t.Fatalf("preview --render failed (exit %d): %s", code, out)
+	}
+
+	// Should contain rendered subject with actual name, not placeholder
+	if !strings.Contains(out, "Subject:") {
+		t.Errorf("expected 'Subject:' in rendered preview: %s", out)
+	}
+	// The first lead (alphabetically by send_at) should have placeholders filled in.
+	// setupCampaignTestFiles creates leads john@acme.com (John) and jane@foo.com (Jane).
+	// Check that at least one rendered name appears and no raw placeholders remain.
+	hasRenderedName := strings.Contains(out, "John") || strings.Contains(out, "Jane")
+	if !hasRenderedName {
+		t.Errorf("expected rendered first_name (John or Jane) in output: %s", out)
+	}
+	hasRenderedCompany := strings.Contains(out, "Acme") || strings.Contains(out, "Foo")
+	if !hasRenderedCompany {
+		t.Errorf("expected rendered company (Acme or Foo) in output: %s", out)
+	}
+	if strings.Contains(out, "{{first_name}}") {
+		t.Errorf("output still contains raw {{first_name}} placeholder: %s", out)
+	}
+	if strings.Contains(out, "{{company}}") {
+		t.Errorf("output still contains raw {{company}} placeholder: %s", out)
+	}
+}

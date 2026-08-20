@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: openoutreach
+      POSTGRES_PASSWORD: openoutreach
+      POSTGRES_DB: openoutreach
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openoutreach"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - oo_pg:/var/lib/postgresql/data
+
+  outreachd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      COLD_CLI_DATABASE_URL: postgresql://openoutreach:openoutreach@postgres:5432/openoutreach?sslmode=disable
+      OPENOUTREACH_WORKSPACE_ID: default
+      OPENOUTREACH_MOCK_GMAIL: "1"
+      CREDENTIAL_ENCRYPTION_KEY: local-dev-encryption-key-change-me
+      INTERNAL_CONTAINER_TOKEN: local-internal-token
+      PUBLIC_BASE_URL: http://localhost:8080
+      LISTEN_ADDR: ":8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - ./web:/app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE: http://localhost:8080
+    depends_on:
+      - outreachd
+
+volumes:
+  oo_pg:

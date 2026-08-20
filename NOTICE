@@ -1,0 +1,10 @@
+OpenOutreach
+============
+
+This product includes software developed as part of cold-cli
+(https://github.com/andersmyrmel/cold-cli), Copyright (c) Anders Myrmel,
+licensed under the MIT License.
+
+OpenOutreach keeps the Go module path `github.com/andersmyrmel/cold-cli` so
+upstream merges stay clean. Product branding, hosted control plane, Worker,
+dashboard, and MCP layers are OpenOutreach additions.
