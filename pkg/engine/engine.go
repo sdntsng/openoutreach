@@ -160,8 +160,8 @@ func PauseLead(db *sql.DB, email string) (*internal.PauseLeadResult, error) {
 	return internal.PauseLead(db, email)
 }
 
-func ListLeads(db *sql.DB, domain, status string, limit int) ([]internal.LeadListRow, error) {
-	return internal.ListLeads(db, domain, status, limit)
+func ListLeads(db *sql.DB, domain, status, search string, limit int) ([]internal.LeadListRow, error) {
+	return internal.ListLeads(db, domain, status, search, limit)
 }
 
 func GetCampaignStepStats(db *sql.DB, campaignID int64) ([]internal.StepStats, error) {

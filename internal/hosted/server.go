@@ -25,7 +25,6 @@ type Server struct {
 	WorkspaceID    string
 	InternalToken  string
 	PublicBaseURL  string
-	TrackingSecret string
 	UseMockGmail   bool
 	ListenAddr     string
 	Mux            *http.ServeMux
@@ -46,7 +45,6 @@ type ServerOpts struct {
 	WorkspaceID        string
 	InternalToken      string
 	PublicBaseURL      string
-	TrackingSecret     string
 	UseMockGmail       bool
 	ListenAddr         string
 	EncryptionKey      []byte
@@ -61,7 +59,6 @@ func NewServer(store *engine.Store, opts ServerOpts) (*Server, error) {
 		WorkspaceID:    internal.NormalizeWorkspaceID(opts.WorkspaceID),
 		InternalToken:  opts.InternalToken,
 		PublicBaseURL:  strings.TrimRight(opts.PublicBaseURL, "/"),
-		TrackingSecret: opts.TrackingSecret,
 		UseMockGmail:   opts.UseMockGmail,
 		ListenAddr:     opts.ListenAddr,
 		Mux:            http.NewServeMux(),

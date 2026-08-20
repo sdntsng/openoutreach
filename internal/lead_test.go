@@ -277,7 +277,7 @@ func TestListLeads_All(t *testing.T) {
 	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('b@acme.com', 'Bob', 'Acme', 'acme.com')")
 	db.Exec("INSERT INTO leads (email, first_name, company, domain, global_status) VALUES ('c@other.com', 'Carol', 'Other', 'other.com', 'blacklisted')")
 
-	leads, err := ListLeads(db, "", "", 50)
+	leads, err := ListLeads(db, "", "", "", 50)
 	if err != nil {
 		t.Fatalf("ListLeads error: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestListLeads_FilterByDomain(t *testing.T) {
 	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('b@acme.com', 'Bob', 'Acme', 'acme.com')")
 	db.Exec("INSERT INTO leads (email, first_name, company, domain) VALUES ('c@other.com', 'Carol', 'Other', 'other.com')")
 
-	leads, err := ListLeads(db, "acme.com", "", 50)
+	leads, err := ListLeads(db, "acme.com", "", "", 50)
 	if err != nil {
 		t.Fatalf("ListLeads error: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestListLeads_FilterByStatus(t *testing.T) {
 	db.Exec("INSERT INTO leads (email, domain) VALUES ('a@x.com', 'x.com')")
 	db.Exec("INSERT INTO leads (email, domain, global_status) VALUES ('b@x.com', 'x.com', 'blacklisted')")
 
-	leads, err := ListLeads(db, "", "blacklisted", 50)
+	leads, err := ListLeads(db, "", "blacklisted", "", 50)
 	if err != nil {
 		t.Fatalf("ListLeads error: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestListLeads_Limit(t *testing.T) {
 	db.Exec("INSERT INTO leads (email, domain) VALUES ('b@x.com', 'x.com')")
 	db.Exec("INSERT INTO leads (email, domain) VALUES ('c@x.com', 'x.com')")
 
-	leads, err := ListLeads(db, "", "", 1)
+	leads, err := ListLeads(db, "", "", "", 1)
 	if err != nil {
 		t.Fatalf("ListLeads error: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestListLeads_WithCampaignCount(t *testing.T) {
 	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (1, 1, 'active')")
 	db.Exec("INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (2, 1, 'active')")
 
-	leads, err := ListLeads(db, "", "", 50)
+	leads, err := ListLeads(db, "", "", "", 50)
 	if err != nil {
 		t.Fatalf("ListLeads error: %v", err)
 	}
