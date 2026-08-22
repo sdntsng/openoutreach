@@ -82,9 +82,13 @@ export class OutreachContainer extends Container<Env> {
     const revision = containerEnv.CONTAINER_BOOT_REVISION ?? "";
     const stored = await this.ctx.storage.get<string>("boot_revision");
     if (stored === revision) return;
-    const state = await this.getState();
-    if (state.status === "running" || state.status === "healthy") {
-      await this.stop();
+    // Only stop a previously-warm container when revision changes. Do not stop on
+    // first boot (stored unset) or we interrupt outreachd schema migration.
+    if (stored != null && stored !== revision) {
+      const state = await this.getState();
+      if (state.status === "running" || state.status === "healthy") {
+        await this.stop();
+      }
     }
     await this.ctx.storage.put("boot_revision", revision);
   }

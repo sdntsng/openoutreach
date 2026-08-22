@@ -150,8 +150,10 @@ func openStore(cfg storeOpenConfig) (*Store, error) {
 			if err != nil {
 				return nil, fmt.Errorf("opening D1 proxy: %w", err)
 			}
-			db.SetMaxOpenConns(1)
-			db.SetMaxIdleConns(1)
+			// D1 is remote HTTP; allow >1 conn so open Rows do not block other queries
+			// (sqlite file mode keeps MaxOpenConns(1) for local write locking).
+			db.SetMaxOpenConns(8)
+			db.SetMaxIdleConns(4)
 
 			registerDBDialect(db, dialect)
 			if err := cfg.bootstrapSQLite(db); err != nil {

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -132,6 +133,49 @@ type proxyResp struct {
 }
 
 func (c *conn) roundTrip(ctx context.Context, req proxyReq) (*proxyResp, error) {
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * 250 * time.Millisecond):
+			}
+		}
+		out, err := c.roundTripOnce(ctx, req)
+		if err == nil {
+			return out, nil
+		}
+		lastErr = err
+		if !isRetryableD1HTTPError(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func isRetryableD1HTTPError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "http 502") ||
+		strings.Contains(msg, "http 503") ||
+		strings.Contains(msg, "http 504")
+}
+
+func (c *conn) roundTripOnce(ctx context.Context, req proxyReq) (*proxyResp, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err

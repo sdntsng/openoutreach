@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestDriverQueryAndExec(t *testing.T) {
@@ -63,5 +64,93 @@ func TestDriverQueryAndExec(t *testing.T) {
 	}
 	if gotID != 7 || email != "a@b.com" {
 		t.Fatalf("got %d %s", gotID, email)
+	}
+}
+
+func TestExecWhileRowsOpenRequiresMultipleConns(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(raw, &req)
+		mode, _ := req["mode"].(string)
+		switch mode {
+		case "query":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"columns": []string{"id"},
+				"rows":    [][]any{{float64(1)}},
+			})
+		case "exec":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"meta": map[string]any{"changes": 1},
+			})
+		default:
+			w.WriteHeader(400)
+		}
+	}))
+	defer srv.Close()
+
+	db, err := sql.Open("d1http", FormatDSN(srv.URL, "tok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	db.SetMaxOpenConns(1)
+	rows, err := db.Query("SELECT id FROM t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rows.Next() {
+		t.Fatal("expected row")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := db.Exec("UPDATE t SET v = 1")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("expected deadlock with MaxOpenConns(1), got %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("exec after closing rows: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("exec still blocked after closing rows")
+	}
+
+	db.SetMaxOpenConns(2)
+	rows2, err := db.Query("SELECT id FROM t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rows2.Next() {
+		t.Fatal("expected row")
+	}
+
+	done2 := make(chan error, 1)
+	go func() {
+		_, err := db.Exec("UPDATE t SET v = 2")
+		done2 <- err
+	}()
+
+	select {
+	case err := <-done2:
+		if err != nil {
+			t.Fatalf("exec with MaxOpenConns(2): %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("exec blocked with MaxOpenConns(2) while rows open")
+	}
+	if err := rows2.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

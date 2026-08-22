@@ -196,6 +196,9 @@ func backfillEmailMessageDisplayBodies(db *sql.DB) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
 
 	for _, row := range pending {
 		displayBody := emailDisplayBody(EmailMessage{
