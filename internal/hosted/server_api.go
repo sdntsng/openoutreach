@@ -188,7 +188,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		s.GWS.API.RegisterAccount(email, res.ID)
 	}
 	_ = SetHostedKV(s.Store.DB, "account_oauth:"+strings.ToLower(email), "ok")
-	http.Redirect(w, r, "/sending-accounts?connected=1", http.StatusFound)
+	http.Redirect(w, r, "/accounts?connected=1", http.StatusFound)
 }
 
 func (s *Server) handlePauseAccount(w http.ResponseWriter, r *http.Request) {

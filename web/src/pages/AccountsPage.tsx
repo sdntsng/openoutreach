@@ -1,10 +1,20 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, asArray, type Account } from "../api";
 
 export default function AccountsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const connected = searchParams.get("connected") === "1";
+
+  useEffect(() => {
+    if (!connected) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("connected");
+    setSearchParams(next, { replace: true });
+  }, [connected, searchParams, setSearchParams]);
 
   useEffect(() => {
     api
@@ -44,6 +54,11 @@ export default function AccountsPage() {
         Connect a Gmail / Google Workspace mailbox. OAuth starts via{" "}
         <code>GET /api/v1/accounts/google/oauth/start</code>.
       </p>
+      {connected && (
+        <div className="panel" style={{ marginBottom: "1rem" }}>
+          Google account connected.
+        </div>
+      )}
       {error && <div className="error">{error}</div>}
       <table>
         <thead>
