@@ -13,6 +13,7 @@ memory/
 .env
 .env.*
 !.env.example
+!.env.deploy.example
 *.key
 *.pem
 *.p12
@@ -32,6 +33,7 @@ node_modules/
 web/node_modules/
 worker/node_modules/
 worker/.wrangler/
+worker/src/container-env.ts
 web/dist/assets/
 *.tsbuildinfo
 .idea/

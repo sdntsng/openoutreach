@@ -1,0 +1,7 @@
+.git
+web
+worker
+docs
+*.md
+.env
+.env.*

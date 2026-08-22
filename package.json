@@ -1,0 +1,7 @@
+{
+  "name": "openoutreach",
+  "private": true,
+  "scripts": {
+    "deploy:cf": "bash scripts/deploy-cf.sh"
+  }
+}

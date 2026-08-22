@@ -1,4 +1,5 @@
-import { NavLink, Route, Routes } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useSearchParams } from "react-router-dom";
+import { safeRedirect, signOut, useAuth } from "./auth-client";
 import OverviewPage from "./pages/OverviewPage";
 import CampaignsPage from "./pages/CampaignsPage";
 import CampaignDetailPage from "./pages/CampaignDetailPage";
@@ -7,6 +8,8 @@ import InboxPage from "./pages/InboxPage";
 import LeadsPage from "./pages/LeadsPage";
 import AccountsPage from "./pages/AccountsPage";
 import SettingsPage from "./pages/SettingsPage";
+import SignInPage from "./pages/SignInPage";
+import SignUpPage from "./pages/SignUpPage";
 
 const NAV_MAIN = [{ to: "/", label: "Overview", end: true as const }];
 const NAV_MAIL = [
@@ -45,7 +48,54 @@ function NavGroup({
   );
 }
 
-export default function App() {
+function GuestOnly({ children }: { children: React.ReactNode }) {
+  const auth = useAuth();
+  const [params] = useSearchParams();
+  if (auth.pending) {
+    return (
+      <div className="auth-shell">
+        <p className="muted">Loading…</p>
+      </div>
+    );
+  }
+  if (auth.mode !== "hosted") {
+    return <Navigate to="/" replace />;
+  }
+  if (auth.user) {
+    return <Navigate to={safeRedirect(params.get("redirect"))} replace />;
+  }
+  return children;
+}
+
+function AuthedShell() {
+  const auth = useAuth();
+  if (auth.pending) {
+    return (
+      <div className="auth-shell">
+        <p className="muted">Loading…</p>
+      </div>
+    );
+  }
+  if (auth.mode === "hosted" && !auth.user) {
+    const next = window.location.pathname + window.location.search;
+    return <Navigate to={`/sign-in?redirect=${encodeURIComponent(next)}`} replace />;
+  }
+  if (auth.mode === "cloudflare_access" && auth.accessConfigured === false) {
+    return (
+      <div className="auth-shell">
+        <div className="auth-card">
+          <h1>Cloudflare Access is not configured</h1>
+          <p className="muted">
+            Set CF_ACCESS_AUD to your Access application AUD tag, or switch AUTH_MODE to hosted
+            (in-app Google/email) or local_noauth.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const showUser = Boolean(auth.user && auth.mode !== "local_noauth");
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -53,6 +103,16 @@ export default function App() {
         <NavGroup label="Main" items={NAV_MAIN} />
         <NavGroup label="Mailbox" items={NAV_MAIL} />
         <NavGroup label="Setup" items={NAV_SETUP} />
+        {showUser ? (
+          <div className="sidebar-foot">
+            <div className="sidebar-user" title={auth.user?.email}>
+              {auth.user?.name || auth.user?.email}
+            </div>
+            <button type="button" className="secondary" onClick={() => signOut(auth.mode)}>
+              Sign out
+            </button>
+          </div>
+        ) : null}
       </aside>
       <main className="main">
         <Routes>
@@ -67,5 +127,29 @@ export default function App() {
         </Routes>
       </main>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route
+        path="/sign-in"
+        element={
+          <GuestOnly>
+            <SignInPage />
+          </GuestOnly>
+        }
+      />
+      <Route
+        path="/sign-up"
+        element={
+          <GuestOnly>
+            <SignUpPage />
+          </GuestOnly>
+        }
+      />
+      <Route path="*" element={<AuthedShell />} />
+    </Routes>
   );
 }

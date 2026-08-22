@@ -160,6 +160,36 @@ button:disabled {
   color: var(--accent-hover);
 }
 
+.sidebar-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.55rem;
+}
+
+.sidebar-user {
+  font-size: 0.8rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.linkish {
+  background: none;
+  border: none;
+  box-shadow: none;
+  color: var(--accent-hover);
+  padding: 0;
+  font-weight: 500;
+}
+
+button.linkish:hover {
+  background: none;
+  text-decoration: underline;
+}
+
 .main {
   padding: 1.5rem 1.75rem 2.5rem;
   max-width: 1120px;
@@ -472,4 +502,87 @@ pre.panel {
   .split {
     grid-template-columns: 1fr;
   }
+}
+
+.auth-shell {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: var(--bg);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 20rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+  text-align: center;
+}
+
+.auth-card h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.auth-mark {
+  width: 2.5rem;
+  height: 2.5rem;
+  margin: 0 auto;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  font-size: 0.85rem;
+}
+
+.auth-methods,
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.auth-google {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+}
+
+.auth-google:hover {
+  background: var(--row-hover);
+}
+
+.auth-form input {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.auth-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+.auth-footer {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.auth-footer-row {
+  display: flex;
+  justify-content: space-between;
 }

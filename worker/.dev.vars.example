@@ -1,12 +1,38 @@
-# Worker secrets (set via `wrangler secret put`):
-INTERNAL_CONTAINER_TOKEN=
-MCP_BEARER_TOKEN=
-TRACKING_HMAC_SECRET=
+# Worker secrets — copy to .dev.vars for local dev, or .env.deploy at repo root for deploy script.
+# Set via `wrangler secret put` in production.
+
+# Direct Postgres URL (no PgBouncer transaction pooler). See docs/DEPLOYMENT.md#postgres.
 DATABASE_URL=
+
+# Google OAuth (Gmail send + readonly). See docs/GOOGLE_OAUTH.md.
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+
+# Generate: openssl rand -hex 32 — do not rotate after connecting Gmail accounts.
 CREDENTIAL_ENCRYPTION_KEY=
+
+# Generate: openssl rand -hex 32 — Worker→Container auth (X-Internal-Token).
+INTERNAL_CONTAINER_TOKEN=
+
+# Generate: openssl rand -hex 32 — MCP clients: Authorization: Bearer …
+MCP_BEARER_TOKEN=
+
+# Generate: openssl rand -hex 32 — signs open/click tracking tokens.
+TRACKING_HMAC_SECRET=
+
+# Public origin (tracking pixels, OAuth redirects, D1 SQL proxy).
 PUBLIC_BASE_URL=http://localhost:8787
+
+# D1 mode (wrangler dev): leave DATABASE_URL empty and set:
+# OPENOUTREACH_D1_PROXY=http://localhost:8787
+
+# Optional redirect override (defaults to {PUBLIC_BASE_URL}/api/v1/accounts/google/oauth/callback).
+# GOOGLE_REDIRECT_URL=
+
 OPENOUTREACH_WORKSPACE_ID=default
-# Optional: enforce Access JWT assertion (except /t/* and OAuth callback)
+
+# Dashboard auth: cloudflare_access (default) | hosted | local_noauth
+# AUTH_MODE=local_noauth
+
+# Optional: enforce Access JWT assertion (except /t/* and OAuth callback).
 # CF_ACCESS_AUD=

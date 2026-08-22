@@ -5,11 +5,64 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "build:web": "npm ci --prefix ../web && npm run build --prefix ../web",
+    "build": "npm run build:web",
+    "deploy": "npm run build && wrangler deploy",
+    "deploy:cf": "npm run deploy",
     "types": "wrangler types"
   },
+  "cloudflare": {
+    "bindings": {
+      "DATABASE_URL": {
+        "description": "Optional. Direct Postgres URL when STORAGE=postgres (no PgBouncer transaction pooler). Leave empty to use Cloudflare D1."
+      },
+      "DB": {
+        "description": "Cloudflare D1 database (default storage). Auto-created as `openoutreach`."
+      },
+      "GOOGLE_CLIENT_ID": {
+        "description": "Google OAuth client ID (Gmail send + readonly)."
+      },
+      "GOOGLE_CLIENT_SECRET": {
+        "description": "Google OAuth client secret."
+      },
+      "CREDENTIAL_ENCRYPTION_KEY": {
+        "description": "Generate: `openssl rand -hex 32`. **Do not rotate** after connecting Gmail accounts."
+      },
+      "INTERNAL_CONTAINER_TOKEN": {
+        "description": "Generate: `openssl rand -hex 32`. Worker→Container auth header."
+      },
+      "MCP_BEARER_TOKEN": {
+        "description": "Generate: `openssl rand -hex 32`. MCP clients use `Authorization: Bearer …`."
+      },
+      "TRACKING_HMAC_SECRET": {
+        "description": "Generate: `openssl rand -hex 32`. Signs open/click tracking tokens."
+      },
+      "PUBLIC_BASE_URL": {
+        "description": "Public origin, e.g. `https://openoutreach.<account>.workers.dev` or your custom domain."
+      },
+      "OPENOUTREACH_WORKSPACE_ID": {
+        "description": "Workspace scope. Default: `default`."
+      },
+      "AUTH_MODE": {
+        "description": "Dashboard auth: `cloudflare_access` (default), `hosted` (Better Auth Google/email), or `local_noauth`."
+      },
+      "CF_ACCESS_AUD": {
+        "description": "Cloudflare Access application AUD tag. Required when AUTH_MODE=cloudflare_access."
+      },
+      "POLICY_AUD": {
+        "description": "Alias of CF_ACCESS_AUD (OpenSEO name)."
+      },
+      "BETTER_AUTH_SECRET": {
+        "description": "Better Auth cookie/session secret when AUTH_MODE=hosted. Generate: `openssl rand -hex 32`."
+      },
+      "AUTH_ALLOWED_EMAILS": {
+        "description": "Comma-separated allowlist. Access policy (default) and Better Auth signup (hosted)."
+      }
+    }
+  },
   "dependencies": {
-    "@cloudflare/containers": "^0.0.28"
+    "@cloudflare/containers": "^0.0.28",
+    "better-auth": "^1.6.22"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250813.0",

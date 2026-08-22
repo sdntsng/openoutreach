@@ -12,7 +12,7 @@ Humans use the dashboard. Agents use MCP/API. Both drive the same engine:
 2. **Eager scheduling.** All sends live in `scheduled_sends`. Do not invent lazy `next_send_at` on campaign_leads.
 3. **GWSClient is the mail provider.** Hosted Gmail is `GoogleAPIProvider` implementing `GWSClient`. Do not add a parallel MailProvider stack.
 4. **Tick lock is caller-owned.** `AcquireTickLock` before `engine.Tick`. Never send when locked.
-5. **Direct Postgres for tick.** No Hyperdrive / transaction-mode PgBouncer on the advisory-lock connection.
+5. **Tick lock is session-safe.** Postgres: direct URL only (no Hyperdrive / transaction-mode PgBouncer). D1: `tick_lock` row. Never send when locked.
 6. **Workspace via config/header.** `workspace_id` from `OPENOUTREACH_WORKSPACE_ID` / `X-Workspace-ID` — never email-domain inference.
 7. **Thread continuity.** One account per lead for a campaign; step-1 backfills `thread_id` / `parent_message_id`.
 8. **Error isolation.** One failed send marks that row `failed` and continues the tick.
@@ -49,10 +49,11 @@ Settled cold-cli decisions (scheduler, templates as `ReplaceAll`, daily limits f
 - **Listen:** `:8080` — `GET /internal/health`, `POST /internal/tick`
 - **API:** `/api/v1/*` JSON envelope `{ data, error, warnings }` + `next_actions` where useful
 - **Tick:** lock → `NoSleep=true`, `MaxSendsPerTick=1` → reply poll still every tick
+- **Storage:** D1 (default, `/internal/d1`) or direct Postgres
 - **OAuth scopes:** `openid` `email` `gmail.send` `gmail.readonly`
 - **Mock:** `OPENOUTREACH_MOCK_GMAIL=1`
 - **Worker cron:** `*/2 * * * *` UTC — cron ≠ send permission
-- **Public paths:** `/t/o/*`, `/t/c/*`, OAuth callback; Access/MCP bearer for the rest when configured
+- **Public paths:** `/t/o/*`, `/t/c/*`, Gmail OAuth callback. Auth: `AUTH_MODE=cloudflare_access` (default), `hosted` (Better Auth `/sign-in` + `/api/auth/*`), or `local_noauth`. MCP bearer still works.
 
 ## Dashboard UI direction
 

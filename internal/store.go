@@ -2,13 +2,18 @@ package internal
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
+
+	"github.com/andersmyrmel/cold-cli/internal/d1http"
 )
 
 type Dialect string
@@ -35,6 +40,7 @@ type Store struct {
 	displayTarget string
 	tickLockPath  string
 	tickLockKey   int64
+	d1Mode        bool
 
 	acquireSQLiteTickLock   func(path string) (TickLock, error)
 	acquirePostgresTickLock func(ctx context.Context, db *sql.DB, key int64) (TickLock, error)
@@ -44,6 +50,8 @@ type storeOpenConfig struct {
 	dialect     Dialect
 	sqlitePath  string
 	postgresURL string
+	d1Proxy     string
+	d1Token     string
 
 	openDB            func(driverName, dataSourceName string) (*sql.DB, error)
 	bootstrapSQLite   func(db *sql.DB) error
@@ -70,6 +78,8 @@ func storeOpenConfigFromEnv() storeOpenConfig {
 		cfg.postgresURL = strings.TrimSpace(os.Getenv("COLD_CLI_DATABASE_URL"))
 	} else {
 		cfg.sqlitePath = DBPath()
+		cfg.d1Proxy = strings.TrimSpace(os.Getenv("OPENOUTREACH_D1_PROXY"))
+		cfg.d1Token = os.Getenv("INTERNAL_CONTAINER_TOKEN")
 	}
 	return cfg
 }
@@ -86,6 +96,9 @@ func CurrentDialect() Dialect {
 func DatabaseDisplayTarget() string {
 	if url := strings.TrimSpace(os.Getenv("COLD_CLI_DATABASE_URL")); url != "" {
 		return redactDatabaseURL(url)
+	}
+	if proxy := strings.TrimSpace(os.Getenv("OPENOUTREACH_D1_PROXY")); proxy != "" {
+		return "cloudflare D1 via " + proxy
 	}
 	return DBPath()
 }
@@ -132,6 +145,28 @@ func openStore(cfg storeOpenConfig) (*Store, error) {
 
 	switch dialect {
 	case DialectSQLite:
+		if strings.TrimSpace(cfg.d1Proxy) != "" {
+			db, err := cfg.openDB("d1http", d1http.FormatDSN(cfg.d1Proxy, cfg.d1Token))
+			if err != nil {
+				return nil, fmt.Errorf("opening D1 proxy: %w", err)
+			}
+			db.SetMaxOpenConns(1)
+			db.SetMaxIdleConns(1)
+
+			registerDBDialect(db, dialect)
+			if err := cfg.bootstrapSQLite(db); err != nil {
+				unregisterDBDialect(db)
+				db.Close()
+				return nil, err
+			}
+
+			store.DB = db
+			store.d1Mode = true
+			store.target = cfg.d1Proxy
+			store.displayTarget = "cloudflare D1 via " + cfg.d1Proxy
+			return store, nil
+		}
+
 		if cfg.sqlitePath == "" {
 			cfg.sqlitePath = DBPath()
 		}
@@ -208,6 +243,12 @@ func (s *Store) AcquireTickLock(ctx context.Context) (TickLock, error) {
 
 	switch s.Dialect {
 	case DialectSQLite:
+		if s.d1Mode {
+			if s.DB == nil {
+				return nil, fmt.Errorf("database handle is nil")
+			}
+			return acquireD1TickLock(ctx, s.DB)
+		}
 		return s.acquireSQLiteTickLock(s.tickLockPath)
 	case DialectPostgres:
 		if s.DB == nil {
@@ -239,6 +280,57 @@ func acquireSQLiteTickLock(lockPath string) (TickLock, error) {
 	}
 
 	return f, nil
+}
+
+const d1TickLockStaleSeconds = 180
+
+type d1TickLock struct {
+	db     *sql.DB
+	holder string
+}
+
+func acquireD1TickLock(ctx context.Context, db *sql.DB) (TickLock, error) {
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS tick_lock (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		holder TEXT NOT NULL,
+		locked_at INTEGER NOT NULL
+	)`); err != nil {
+		return nil, fmt.Errorf("creating tick_lock: %w", err)
+	}
+
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return nil, fmt.Errorf("tick lock holder: %w", err)
+	}
+	holder := fmt.Sprintf("%d-%s", time.Now().UnixNano(), hex.EncodeToString(buf[:]))
+
+	res, err := db.ExecContext(ctx, `
+		INSERT INTO tick_lock (id, holder, locked_at)
+		VALUES (1, ?, CAST(strftime('%s','now') AS INTEGER))
+		ON CONFLICT(id) DO UPDATE SET
+			holder = excluded.holder,
+			locked_at = excluded.locked_at
+		WHERE tick_lock.locked_at < CAST(strftime('%s','now') AS INTEGER) - ?`,
+		holder, d1TickLockStaleSeconds)
+	if err != nil {
+		return nil, fmt.Errorf("acquiring D1 tick lock: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, fmt.Errorf("tick already running")
+	}
+	return &d1TickLock{db: db, holder: holder}, nil
+}
+
+func (l *d1TickLock) Close() error {
+	if l == nil || l.db == nil {
+		return nil
+	}
+	_, err := l.db.Exec(`DELETE FROM tick_lock WHERE id = 1 AND holder = ?`, l.holder)
+	return err
 }
 
 type postgresAdvisoryLocker interface {

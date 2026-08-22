@@ -73,6 +73,11 @@ var hostedSchemaSQLite = []string{
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	)`,
+	`CREATE TABLE IF NOT EXISTS tick_lock (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		holder TEXT NOT NULL,
+		locked_at INTEGER NOT NULL
+	)`,
 }
 
 var hostedSchemaPostgres = []string{

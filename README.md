@@ -52,6 +52,20 @@ curl -s -X POST localhost:8080/internal/tick -H 'X-Internal-Token: '"$INTERNAL_C
 
 Dashboard: `cd web && npm install && npm run dev` (proxies `/api` or point Vite at `:8080`).
 
+## Deploy to Cloudflare
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sdntsng/openoutreach&dir=worker)
+
+**CLI (recommended for this repo):**
+
+```bash
+cp .env.deploy.example .env.deploy
+# Default: Cloudflare D1. For Postgres set STORAGE=postgres and DATABASE_URL.
+./scripts/deploy-cf.sh
+```
+
+Full guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (Postgres options, secrets, Access, OAuth, smoke tests).
+
 ## Docs
 
 | Doc | Purpose |
@@ -65,6 +79,8 @@ Dashboard: `cd web && npm install && npm run dev` (proxies `/api` or point Vite 
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat notes |
 | [docs/RELEASING.md](docs/RELEASING.md) | Semver tags + CI release |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | PR / test norms |
+
+Product docs site (Mintlify) tracked in [GitHub #16](https://github.com/sdntsng/openoutreach/issues/16) and child issues #17–#23.
 
 ## Suggested GitHub metadata
 

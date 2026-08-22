@@ -444,7 +444,7 @@ async function proxyToContainer(
   path: string,
   body?: unknown,
 ): Promise<unknown> {
-  const container = getContainer(env.OUTREACH, "default");
+  const container = getContainer(env.OUTREACH, "core");
   const headers: Record<string, string> = {
     Accept: "application/json",
   };

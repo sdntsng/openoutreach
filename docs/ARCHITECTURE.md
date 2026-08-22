@@ -4,8 +4,8 @@
 Browser / MCP client
         │
         ▼
-Cloudflare Worker  ── public /t/o /t/c
-        │              Access-protected /api /mcp /dashboard
+Cloudflare Worker  ── public /t/o /t/c, Gmail OAuth callback
+        │              AUTH_MODE=cloudflare_access (default) or hosted Better Auth
         │ scheduled */2
         ▼
 Cloudflare Container (outreachd :8080)
@@ -15,7 +15,7 @@ Cloudflare Container (outreachd :8080)
         └─ Google OAuth + encrypted credentials
                 │
                 ▼
-        Direct Postgres (session / advisory locks)
+        Direct Postgres (advisory lock)  **or**  D1 via Worker /internal/d1 (tick_lock row)
 ```
 
 ## Components
@@ -43,4 +43,4 @@ Cloudflare Container (outreachd :8080)
 
 ## Auth
 
-Cloudflare Access on dashboard/API/MCP. Tracking + OAuth callback public. Internal tick token for Worker→Container.
+`AUTH_MODE` on the Worker: **`cloudflare_access`** (default, Zero Trust), **`hosted`** (Better Auth Google/email), or **`local_noauth`**. Tracking + Gmail OAuth callback public. MCP bearer or Access/session. Internal tick token for Worker→Container.

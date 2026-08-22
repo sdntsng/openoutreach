@@ -1,4 +1,5 @@
 {
+  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "openoutreach",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-20",
@@ -32,18 +33,31 @@
     "directory": "../web/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": [
-      "/api/*",
-      "/mcp/*",
-      "/internal/*",
-      "/t/*",
-      "/oauth/*"
-    ]
+    "run_worker_first": true
   },
   "observability": {
     "enabled": true
   },
+  "secrets": {
+    "required": [
+      "CREDENTIAL_ENCRYPTION_KEY",
+      "INTERNAL_CONTAINER_TOKEN",
+      "MCP_BEARER_TOKEN",
+      "TRACKING_HMAC_SECRET"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "openoutreach",
+      "database_id": "11d7a49f-be02-4c14-b125-fb2172d2ff9c",
+      "migrations_dir": "migrations"
+    }
+  ],
   "vars": {
-    "PUBLIC_BASE_URL": "http://localhost:8787"
+    "OPENOUTREACH_WORKSPACE_ID": "default",
+    "PUBLIC_BASE_URL": "https://openoutreach.siddhant.site",
+    "AUTH_MODE": "cloudflare_access",
+    "AUTH_ALLOWED_EMAILS": "sid.tauras1@gmail.com"
   }
 }

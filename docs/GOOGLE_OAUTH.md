@@ -31,3 +31,18 @@ State is stored server-side and single-use.
 ## Local mock
 
 `OPENOUTREACH_MOCK_GMAIL=1` — `POST .../oauth/start?email=you@example.com` creates a mock GWS account without Google.
+
+## Production setup
+
+1. Create a Google Cloud OAuth 2.0 **Web application** client.
+2. Add authorized redirect URIs:
+
+   `{PUBLIC_BASE_URL}/api/v1/accounts/google/oauth/callback` — Gmail sending accounts
+   `{PUBLIC_BASE_URL}/api/auth/callback/google` — only when `AUTH_MODE=hosted` (Better Auth)
+
+   Example: `https://openoutreach.your-subdomain.workers.dev/api/v1/accounts/google/oauth/callback`
+
+3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` as Worker secrets (via `./scripts/deploy-cf.sh` or `wrangler secret put`).
+4. Optionally override callback with `GOOGLE_REDIRECT_URL` if using a custom domain path.
+
+If Google secrets are missing, OAuth start returns `oauth_not_configured` — set secrets and retry.

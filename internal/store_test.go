@@ -147,6 +147,31 @@ func TestStoreAcquireTickLock_SQLite(t *testing.T) {
 	defer lockB.Close()
 }
 
+func TestAcquireD1TickLock(t *testing.T) {
+	db, err := sql.Open("sqlite", sqliteDSN(":memory:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	lockA, err := acquireD1TickLock(context.Background(), db)
+	if err != nil {
+		t.Fatalf("first lock: %v", err)
+	}
+	if _, err := acquireD1TickLock(context.Background(), db); err == nil {
+		t.Fatal("expected second lock to fail")
+	}
+	if err := lockA.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lockB, err := acquireD1TickLock(context.Background(), db)
+	if err != nil {
+		t.Fatalf("re-acquire: %v", err)
+	}
+	defer lockB.Close()
+}
+
 func TestStoreAcquireTickLock_PostgresSelection(t *testing.T) {
 	called := false
 	lock := &fakeTickLock{}
