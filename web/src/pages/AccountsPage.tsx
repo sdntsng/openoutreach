@@ -9,6 +9,8 @@ export default function AccountsPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showSMTP, setShowSMTP] = useState(false);
+  const [showResend, setShowResend] = useState(false);
+  const [resend, setResend] = useState({ email: "", api_key: "", daily_limit: "50" });
   const [smtp, setSmtp] = useState({
     email: "",
     smtp_host: "",
@@ -103,6 +105,26 @@ export default function AccountsPage() {
     }
   }
 
+  async function onAddResend(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.addResendAccount({
+        email: resend.email,
+        api_key: resend.api_key,
+        daily_limit: Number(resend.daily_limit) || 50,
+      });
+      setShowResend(false);
+      const data = await api.listAccounts();
+      setAccounts(asArray(data, "accounts"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div>
       <div className="row-actions" style={{ justifyContent: "space-between", marginBottom: "1rem" }}>
@@ -121,6 +143,11 @@ export default function AccountsPage() {
           {(!caps || caps.sending?.smtp_imap) && (
             <button type="button" disabled={busy} onClick={() => setShowSMTP((v) => !v)}>
               Add SMTP/IMAP
+            </button>
+          )}
+          {caps?.sending?.resend && (
+            <button type="button" disabled={busy} onClick={() => setShowResend((v) => !v)}>
+              Add Resend
             </button>
           )}
         </div>
@@ -163,6 +190,29 @@ export default function AccountsPage() {
           ))}
           <button type="submit" disabled={busy}>
             Save SMTP account
+          </button>
+        </form>
+      )}
+      {showResend && (
+        <form className="panel form-grid" onSubmit={(e) => void onAddResend(e)} style={{ marginBottom: "1rem" }}>
+          <h3 style={{ marginTop: 0 }}>Resend (send-only)</h3>
+          <p className="muted">API mailer. Weak for cold-inbox reputation; configure bounce webhook. Not Instantly.</p>
+          <label>
+            From email
+            <input value={resend.email} onChange={(e) => setResend({ ...resend, email: e.target.value })} required />
+          </label>
+          <label>
+            API key
+            <input
+              type="password"
+              value={resend.api_key}
+              onChange={(e) => setResend({ ...resend, api_key: e.target.value })}
+              required
+              autoComplete="off"
+            />
+          </label>
+          <button type="submit" disabled={busy}>
+            Save Resend account
           </button>
         </form>
       )}

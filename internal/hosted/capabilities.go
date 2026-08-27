@@ -83,6 +83,7 @@ func BuildCapabilities(workspaceID, publicBaseURL string, encryptionReady, googl
 			"webhook": webhookOn,
 			"sheets":  sheetsOn,
 			"hunter":  envTruthy("FEATURE_HUNTER", false),
+			"warmup":  envTruthy("FEATURE_WARMUP", false),
 		},
 		EncryptionReady:  encryptionReady,
 		GoogleOAuthReady: googleReady,
@@ -101,6 +102,7 @@ func BuildCapabilities(workspaceID, publicBaseURL string, encryptionReady, googl
 		"FEATURE_SHEETS":    boolStr(sheetsOn),
 		"FEATURE_RESEND":    boolStr(resendOn),
 		"FEATURE_SES":       boolStr(sesOn),
+		"FEATURE_WARMUP":    boolStr(envTruthy("FEATURE_WARMUP", false)),
 	}
 	return c
 }

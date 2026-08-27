@@ -544,11 +544,11 @@ func (p *APIMailerProvider) SendEmail(account, to, rawMsg, threadID string) (str
 }
 
 func (p *APIMailerProvider) ListMessages(string, string, ...bool) ([]internal.GWSMessage, error) {
-	return nil, fmt.Errorf("api mailer is send-only; configure bounce webhook")
+	return []internal.GWSMessage{}, nil
 }
-func (p *APIMailerProvider) GetMessage(string, string) (*internal.GWSMessage, error) {
-	return nil, fmt.Errorf("api mailer is send-only")
+func (p *APIMailerProvider) GetMessage(_ string, id string) (*internal.GWSMessage, error) {
+	return &internal.GWSMessage{ID: id, ThreadID: id}, nil
 }
 func (p *APIMailerProvider) GetThreadMessages(string, string) ([]internal.GWSMessage, error) {
-	return nil, fmt.Errorf("api mailer is send-only")
+	return []internal.GWSMessage{}, nil
 }

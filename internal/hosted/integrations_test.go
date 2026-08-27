@@ -249,3 +249,34 @@ func TestMicrosoftOAuthStartRequiresConfig(t *testing.T) {
 	}
 }
 
+func TestResendDisabledAndBounceWebhook(t *testing.T) {
+	srv, _ := setupHosted(t)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/resend", strings.NewReader(`{"email":"from@acme.com","api_key":"re_test"}`))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 without FEATURE_RESEND, got %d %s", rr.Code, rr.Body.String())
+	}
+
+	t.Setenv("FEATURE_RESEND", "1")
+	srv, _ = setupHosted(t)
+	if _, err := srv.Store.DB.Exec(`INSERT INTO leads (email, first_name) VALUES ('bounce@acme.com', 'Bo')`); err != nil {
+		t.Fatal(err)
+	}
+	rr = httptest.NewRecorder()
+	ev := httptest.NewRequest(http.MethodPost, "/api/v1/integrations/resend/events", strings.NewReader(`{"type":"email.bounced","data":{"to":["bounce@acme.com"],"email_id":"msg_1"}}`))
+	ev.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, ev)
+	if rr.Code != 200 {
+		t.Fatalf("bounce webhook %d %s", rr.Code, rr.Body.String())
+	}
+	var status string
+	if err := srv.Store.DB.QueryRow(`SELECT global_status FROM leads WHERE email = 'bounce@acme.com'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "bounced" {
+		t.Fatalf("status=%s", status)
+	}
+}
+

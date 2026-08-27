@@ -112,6 +112,7 @@ func NewServer(store *engine.Store, opts ServerOpts) (*Server, error) {
 		routing.CLI = engine.ConfiguredGWSClient(store.DB)
 	}
 	s.GWS = routing
+	s.hydrateAPIMailers()
 	s.routes()
 	return s, nil
 }
@@ -179,6 +180,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("POST /api/v1/accounts/microsoft/oauth/start", s.handleMicrosoftOAuthStart)
 	s.Mux.HandleFunc("GET /api/v1/accounts/microsoft/oauth/callback", s.handleMicrosoftOAuthCallback)
 	s.Mux.HandleFunc("POST /api/v1/accounts/smtp", s.handleAddSMTPAccount)
+	s.Mux.HandleFunc("POST /api/v1/accounts/resend", s.handleAddResendAccount)
 	s.Mux.HandleFunc("POST /api/v1/accounts/{id}/pause", s.handlePauseAccount)
 	s.Mux.HandleFunc("POST /api/v1/accounts/{id}/resume", s.handleResumeAccount)
 	s.Mux.HandleFunc("POST /api/v1/accounts/{id}/remove", s.handleRemoveAccount)
@@ -195,6 +197,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("POST /api/v1/integrations/sheets/import", s.handleSheetsImport)
 	s.Mux.HandleFunc("POST /api/v1/integrations/webhooks", s.handlePutWebhookEndpoint)
 	s.Mux.HandleFunc("POST /api/v1/integrations/{provider}/ingest", s.handleWebhookIngest)
+	s.Mux.HandleFunc("POST /api/v1/integrations/resend/events", s.handleResendEvents)
 
 	s.Mux.HandleFunc("POST /api/v1/agent/draft-sequence", s.handleDraftSequence)
 	s.Mux.HandleFunc("GET /api/v1/campaigns/{id}/preflight", s.handlePreflightCampaign)

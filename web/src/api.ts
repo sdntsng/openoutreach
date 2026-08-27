@@ -228,6 +228,18 @@ export const api = {
   getThread: (campaignId: string | number, leadId: string | number) =>
     request<{ messages: ThreadMessage[] }>(`/threads/${campaignId}/${leadId}`),
 
+  replyToThread: (
+    campaignId: string | number,
+    leadId: string | number,
+    body: string,
+    confirmTo: string,
+    send = false,
+  ) =>
+    request<unknown>(`/threads/${campaignId}/${leadId}/reply`, {
+      method: "POST",
+      body: JSON.stringify({ body, confirm_to: confirmTo, send, confirm: send }),
+    }),
+
   suggestReply: (campaignId: string | number, leadId: string | number) =>
     request<{ suggested_body?: string; classification?: string; send_allowed?: boolean }>(
       `/threads/${campaignId}/${leadId}/suggest-reply`,
@@ -264,6 +276,12 @@ export const api = {
 
   addSMTPAccount: (body: Record<string, unknown>) =>
     request<Account>("/accounts/smtp", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  addResendAccount: (body: { email: string; api_key: string; daily_limit?: number }) =>
+    request<Account>("/accounts/resend", {
       method: "POST",
       body: JSON.stringify(body),
     }),

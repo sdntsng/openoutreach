@@ -320,6 +320,7 @@ func FetchGoogleUserEmail(ctx context.Context, client *http.Client) (string, str
 type RoutingGWS struct {
 	API       *GoogleAPIProvider
 	Microsoft *MicrosoftGraphProvider
+	APIMailers map[string]*APIMailerProvider
 	CLI       internal.GWSClient
 	Mock      *MockGmail
 }
@@ -339,6 +340,11 @@ func (r *RoutingGWS) SendEmail(account, to, rawMsg, threadID string) (string, st
 		r.Microsoft.mu.Unlock()
 		if ok {
 			return r.Microsoft.SendEmail(account, to, rawMsg, threadID)
+		}
+	}
+	if r.APIMailers != nil {
+		if p, ok := r.APIMailers[strings.ToLower(account)]; ok && p != nil {
+			return p.SendEmail(account, to, rawMsg, threadID)
 		}
 	}
 	if r.CLI != nil {
@@ -364,6 +370,11 @@ func (r *RoutingGWS) ListMessages(account, query string, includeSpamTrash ...boo
 			return r.Microsoft.ListMessages(account, query, includeSpamTrash...)
 		}
 	}
+	if r.APIMailers != nil {
+		if _, ok := r.APIMailers[strings.ToLower(account)]; ok {
+			return []internal.GWSMessage{}, nil
+		}
+	}
 	if r.CLI != nil {
 		return r.CLI.ListMessages(account, query, includeSpamTrash...)
 	}
@@ -387,6 +398,11 @@ func (r *RoutingGWS) GetMessage(account, msgID string) (*internal.GWSMessage, er
 			return r.Microsoft.GetMessage(account, msgID)
 		}
 	}
+	if r.APIMailers != nil {
+		if _, ok := r.APIMailers[strings.ToLower(account)]; ok {
+			return &internal.GWSMessage{ID: msgID, ThreadID: msgID}, nil
+		}
+	}
 	if r.CLI != nil {
 		return r.CLI.GetMessage(account, msgID)
 	}
@@ -408,6 +424,11 @@ func (r *RoutingGWS) GetThreadMessages(account, threadID string) ([]internal.GWS
 		r.Microsoft.mu.Unlock()
 		if ok {
 			return r.Microsoft.GetThreadMessages(account, threadID)
+		}
+	}
+	if r.APIMailers != nil {
+		if _, ok := r.APIMailers[strings.ToLower(account)]; ok {
+			return []internal.GWSMessage{}, nil
 		}
 	}
 	if r.CLI != nil {

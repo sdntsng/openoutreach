@@ -178,7 +178,7 @@ Webhook + Sheets ([#11](https://github.com/sdntsng/openoutreach/issues/11)), Cla
 Sequence draft, reply triage, preflight ([#13](https://github.com/sdntsng/openoutreach/issues/13)–[#15](https://github.com/sdntsng/openoutreach/issues/15)); Mintlify MCP docs ([#21](https://github.com/sdntsng/openoutreach/issues/21)).
 
 **Phase 4 — API mailers + warmup (deferred)**  
-[#5](https://github.com/sdntsng/openoutreach/issues/5); Warmup network ([#25](https://github.com/sdntsng/openoutreach/issues/25)) — status badge only, **outside** `engine.Tick`.
+[#5](https://github.com/sdntsng/openoutreach/issues/5): Resend account (`FEATURE_RESEND=1`) is send-only via `GWSClient`; bounce webhook `POST /api/v1/integrations/resend/events`. SES remains the SMTP/IMAP path. Warmup network ([#25](https://github.com/sdntsng/openoutreach/issues/25)) is a capabilities flag only — **never** coupled to `engine.Tick`.
 
 ---
 
