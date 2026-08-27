@@ -24,6 +24,7 @@ func (s *Server) workspaceFromRequest(r *http.Request) string {
 
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	ws := s.workspaceFromRequest(r)
+	warmup := workspaceWarmupStatus(s.Store.DB, ws)
 	rows, err := query(s.Store.DB, `
 		SELECT a.id, a.workspace_id, a.email, a.daily_limit, a.status, a.provider, a.last_send_at
 		FROM accounts a
@@ -33,7 +34,6 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	defer rows.Close()
 	type acct struct {
 		ID                 int64   `json:"id"`
 		WorkspaceID        string  `json:"workspace_id"`
@@ -48,12 +48,12 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		ReplyMode          string  `json:"reply_mode"`
 		DomainVerification string  `json:"domain_verification"`
 	}
-	warmup := workspaceWarmupStatus(s.Store.DB, ws)
 	var list []acct
 	for rows.Next() {
 		var a acct
 		var last sql.NullTime
 		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Email, &a.DailyLimit, &a.Status, &a.Provider, &last); err != nil {
+			rows.Close()
 			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
@@ -61,17 +61,26 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 			v := last.Time.UTC().Format(time.RFC3339)
 			a.LastSendAt = &v
 		}
-		_ = queryRow(s.Store.DB, `
-			SELECT COUNT(*) FROM events
-			WHERE account_id = ? AND type = 'sent' AND timestamp >= ?`, a.ID, time.Now().UTC().Truncate(24*time.Hour).Format(time.RFC3339)).Scan(&a.SentToday)
-		oauth, _ := GetHostedKV(s.Store.DB, "account_oauth:"+strings.ToLower(a.Email))
-		if oauth == "" {
-			oauth = "ok"
-		}
-		a.OAuthHealth = oauth
 		a.WarmupStatus = warmup
 		a.ReplyMode, a.DomainVerification = mailboxSurface(a.Provider)
 		list = append(list, a)
+	}
+	scanErr := rows.Err()
+	rows.Close()
+	if scanErr != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", scanErr.Error())
+		return
+	}
+	cutoff := time.Now().UTC().Truncate(24 * time.Hour).Format(time.RFC3339)
+	for i := range list {
+		_ = queryRow(s.Store.DB, `
+			SELECT COUNT(*) FROM events
+			WHERE account_id = ? AND type = 'sent' AND timestamp >= ?`, list[i].ID, cutoff).Scan(&list[i].SentToday)
+		oauth, _ := GetHostedKV(s.Store.DB, "account_oauth:"+strings.ToLower(list[i].Email))
+		if oauth == "" {
+			oauth = "ok"
+		}
+		list[i].OAuthHealth = oauth
 	}
 	if list == nil {
 		list = []acct{}
@@ -122,8 +131,8 @@ func workspaceWarmupStatus(db *sql.DB, ws string) string {
 	err := queryRow(db, `
 		SELECT status, COALESCE(metadata, '')
 		FROM integration_credentials
-		WHERE workspace_id = ? AND lower(provider) = 'warmup'
-		ORDER BY id DESC LIMIT 1`, ws).Scan(&status, &metadata)
+		WHERE workspace_id = ? AND provider = ?
+		ORDER BY id DESC LIMIT 1`, ws, "warmup").Scan(&status, &metadata)
 	if err != nil {
 		return "unset"
 	}

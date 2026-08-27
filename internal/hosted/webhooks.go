@@ -124,12 +124,13 @@ func (s *Server) handleWebhookIngest(w http.ResponseWriter, r *http.Request) {
 		"campaign_created": created, "count": len(leads),
 	}
 	if len(leads) > 0 {
-		res, err := internal.AddLeadsToCampaign(s.Store.DB, campaignName, "", leadsToCSV(leads))
+		res, extra, err := s.ingestLeadsForCampaign(campaignID, campaignName, leadsToCSV(leads))
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "import_failed", err.Error())
 			return
 		}
 		out["imported"] = res
+		warnings = append(warnings, extra...)
 		_ = LogEnrichmentCall(s.Store.DB, ws, provider, "ingest", fmt.Sprintf("campaign=%d n=%d", campaignID, len(leads)), float64(len(leads)))
 	}
 	writeJSON(w, http.StatusOK, envelope{Data: out, Warnings: warnings})
@@ -179,6 +180,71 @@ func (s *Server) resolveIngestCampaign(ws string, campaignID int64, campaignName
 		return 0, "", "", false, "", err
 	}
 	return res.ID, res.Name, "draft", true, "", nil
+}
+
+func (s *Server) ingestLeadsForCampaign(campaignID int64, campaignName, csvData string) (any, []string, error) {
+	var seqContent string
+	_ = queryRow(s.Store.DB, `SELECT COALESCE(sequence_content, '') FROM campaigns WHERE id = ?`, campaignID).Scan(&seqContent)
+	if strings.TrimSpace(seqContent) != "" {
+		res, err := internal.AddLeadsToCampaign(s.Store.DB, campaignName, "", csvData)
+		return res, nil, err
+	}
+	records, parseWarnings, err := internal.ParseLeadsCSVFromReader(strings.NewReader(csvData))
+	if err != nil {
+		return nil, parseWarnings, err
+	}
+	added, skipped, err := s.attachDraftLeads(campaignID, records)
+	if err != nil {
+		return nil, parseWarnings, err
+	}
+	return map[string]any{
+		"campaign":        campaignName,
+		"leads_added":     added,
+		"leads_skipped":   skipped,
+		"scheduled_sends": 0,
+	}, append(parseWarnings, "draft has no sequence; leads attached without scheduled_sends"), nil
+}
+
+func (s *Server) attachDraftLeads(campaignID int64, records []internal.LeadRecord) (added, skipped int, err error) {
+	for _, rec := range records {
+		email := strings.ToLower(strings.TrimSpace(rec.Fields["email"]))
+		if email == "" || !strings.Contains(email, "@") {
+			skipped++
+			continue
+		}
+		customJSON := internal.BuildCustomFieldsJSON(rec.Fields)
+		domain := internal.ExtractDomain(email)
+		if _, err := exec(s.Store.DB, `INSERT INTO leads (email, first_name, last_name, company, domain, custom_fields)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(email) DO NOTHING`,
+			email, rec.Fields["first_name"], rec.Fields["last_name"], rec.Fields["company"], domain, customJSON); err != nil {
+			return added, skipped, err
+		}
+		_, _ = exec(s.Store.DB, `UPDATE leads SET first_name = ?, last_name = ?, company = ?, domain = ?, custom_fields = ?
+			WHERE email = ?`, rec.Fields["first_name"], rec.Fields["last_name"], rec.Fields["company"], domain, customJSON, email)
+		var leadID int64
+		var globalStatus string
+		if err := queryRow(s.Store.DB, `SELECT id, global_status FROM leads WHERE email = ?`, email).Scan(&leadID, &globalStatus); err != nil {
+			return added, skipped, err
+		}
+		if globalStatus == "blacklisted" || globalStatus == "bounced" {
+			skipped++
+			continue
+		}
+		var existing int
+		if err := queryRow(s.Store.DB, `SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ? AND lead_id = ?`, campaignID, leadID).Scan(&existing); err != nil {
+			return added, skipped, err
+		}
+		if existing > 0 {
+			skipped++
+			continue
+		}
+		if _, err := exec(s.Store.DB, `INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (?, ?, 'active')`, campaignID, leadID); err != nil {
+			return added, skipped, err
+		}
+		added++
+	}
+	return added, skipped, nil
 }
 
 func webhookCampaignHint(body []byte) (int64, string, bool) {
