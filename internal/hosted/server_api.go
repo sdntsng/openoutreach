@@ -656,8 +656,18 @@ func (s *Server) handleThreadReply(w http.ResponseWriter, r *http.Request) {
 		Body      string `json:"body"`
 		ConfirmTo string `json:"confirm_to"`
 		Send      bool   `json:"send"`
+		Confirm   bool   `json:"confirm"`
 	}
 	_ = json.Unmarshal(body, &req)
+	if req.Confirm {
+		req.Send = true
+	}
+	var globalStatus string
+	_ = queryRow(s.Store.DB, `SELECT global_status FROM leads WHERE id = ?`, lid).Scan(&globalStatus)
+	if req.Send && (globalStatus == "blacklisted" || globalStatus == "bounced") {
+		writeErr(w, http.StatusBadRequest, "suppressed", "lead is "+globalStatus+"; reply not sent")
+		return
+	}
 	if !req.Send {
 		preview, err := engine.PreviewInboxReply(engine.PreviewInboxReplyConfig{
 			DB: s.Store.DB, CampaignID: cid, LeadID: lid, Body: req.Body, WorkspaceID: ws,

@@ -327,21 +327,28 @@ const TOOLS: ToolDef[] = [
   {
     name: "outreach_reply_to_thread",
     description:
-      "Send a human/agent reply on an existing outreach thread (preserves Gmail threading). Consequential: sends email.",
+      "Send a reply on an existing thread. Consequential: requires confirm=true and confirm_to matching the recipient. Unsubscribe/blacklist leads are refused.",
     inputSchema: {
       type: "object",
       properties: {
-        thread_id: { type: "string" },
+        campaign_id: { type: "string" },
+        lead_id: { type: "string" },
         body: { type: "string" },
-        subject: { type: "string" },
+        confirm_to: { type: "string" },
+        confirm: { type: "boolean" },
       },
-      required: ["thread_id", "body"],
+      required: ["campaign_id", "lead_id", "body"],
       additionalProperties: false,
     },
     call: (a) => ({
       method: "POST",
-      path: `/api/v1/threads/${enc(a.thread_id)}/reply`,
-      body: { body: a.body, subject: a.subject },
+      path: `/api/v1/threads/${enc(a.campaign_id)}/${enc(a.lead_id)}/reply`,
+      body: {
+        body: a.body,
+        confirm_to: a.confirm_to,
+        send: a.confirm === true,
+        confirm: a.confirm === true,
+      },
     }),
   },
   {
@@ -509,6 +516,7 @@ const TOOLS: ToolDef[] = [
         tone: { type: "string" },
         step_count: { type: "number" },
         from_name: { type: "string" },
+        campaign_id: { type: "number" },
       },
       additionalProperties: false,
     },
@@ -651,6 +659,20 @@ async function toolsCall(
   if (!tool) {
     return {
       content: [{ type: "text", text: JSON.stringify({ error: `unknown tool: ${name}` }) }],
+      isError: true,
+    };
+  }
+  if (name === "outreach_reply_to_thread" && args.confirm !== true) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            error: "reply_not_confirmed",
+            message: "Set confirm=true and confirm_to after explicit human approval. Suggestion tools never send.",
+          }),
+        },
+      ],
       isError: true,
     };
   }

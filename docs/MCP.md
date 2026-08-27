@@ -34,7 +34,7 @@ Replace `YOUR_WORKER.workers.dev` with your Worker hostname. Never commit the be
 | outreach_pause_campaign / resume | |
 | outreach_add_leads / remove_lead / validate_leads | |
 | outreach_get_campaign / list_campaigns / get_campaign_stats | |
-| outreach_list_replies / get_thread / reply_to_thread | |
+| outreach_list_replies / get_thread / reply_to_thread | reply requires `confirm: true` + `confirm_to` |
 | outreach_search_leads / blacklist_lead | |
 | outreach_list_capabilities | Operator feature flags (no secrets) |
 | outreach_list_integrations | Masked workspace API keys |

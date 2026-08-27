@@ -228,17 +228,10 @@ export const api = {
   getThread: (campaignId: string | number, leadId: string | number) =>
     request<{ messages: ThreadMessage[] }>(`/threads/${campaignId}/${leadId}`),
 
-  replyToThread: (
-    campaignId: string | number,
-    leadId: string | number,
-    body: string,
-    confirmTo: string,
-    send = false,
-  ) =>
-    request<unknown>(`/threads/${campaignId}/${leadId}/reply`, {
-      method: "POST",
-      body: JSON.stringify({ body, confirm_to: confirmTo, send }),
-    }),
+  suggestReply: (campaignId: string | number, leadId: string | number) =>
+    request<{ suggested_body?: string; classification?: string; send_allowed?: boolean }>(
+      `/threads/${campaignId}/${leadId}/suggest-reply`,
+    ),
 
   workspace: () =>
     request<{ workspace_id: string }>("/workspace"),

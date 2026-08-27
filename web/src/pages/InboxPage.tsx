@@ -6,6 +6,7 @@ export default function InboxPage() {
   const [selected, setSelected] = useState<InboxThread | null>(null);
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [reply, setReply] = useState("");
+  const [suggestion, setSuggestion] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -26,6 +27,10 @@ export default function InboxPage() {
       .getThread(selected.campaign_id, selected.lead_id)
       .then((d) => setMessages(d.messages || []))
       .catch((err: Error) => setError(err.message));
+    api
+      .suggestReply(selected.campaign_id, selected.lead_id)
+      .then((d) => setSuggestion(d.suggested_body || ""))
+      .catch(() => setSuggestion(""));
   }, [selected]);
 
   async function onReply(e: FormEvent) {
@@ -101,6 +106,15 @@ export default function InboxPage() {
                 </div>
               ))}
               <form className="form-grid panel" onSubmit={onReply}>
+                {suggestion ? (
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => setReply(suggestion)}
+                  >
+                    Use suggested reply
+                  </button>
+                ) : null}
                 <label>
                   Reply
                   <textarea

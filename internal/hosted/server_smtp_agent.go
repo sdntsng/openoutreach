@@ -166,6 +166,17 @@ func (s *Server) handlePreflightCampaign(w http.ResponseWriter, r *http.Request)
 	if invalid > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d leads look invalid or role-based", invalid))
 	}
+	if seq, err := internal.ParseSequenceFromBytes([]byte(seqContent)); err != nil && strings.TrimSpace(seqContent) != "" {
+		warnings = append(warnings, "sequence YAML: "+err.Error())
+		ready = false
+	} else if seq != nil {
+		for _, p := range seq.CollectPlaceholders() {
+			if p == "first_name" || p == "email" || p == "company" || p == "last_name" || p == "domain" {
+				continue
+			}
+			warnings = append(warnings, "sequence uses custom placeholder {{"+p+"}} — confirm lead CSV has that column")
+		}
+	}
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"campaign_id": id, "name": name, "status": status,
 		"ready": ready, "lead_count": leadCount, "pending_sends": pending,
@@ -176,11 +187,12 @@ func (s *Server) handlePreflightCampaign(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleDraftSequence(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	var req struct {
-		ICP       string `json:"icp"`
-		Offer     string `json:"offer"`
-		Tone      string `json:"tone"`
-		StepCount int    `json:"step_count"`
-		FromName  string `json:"from_name"`
+		ICP        string `json:"icp"`
+		Offer      string `json:"offer"`
+		Tone       string `json:"tone"`
+		StepCount  int    `json:"step_count"`
+		FromName   string `json:"from_name"`
+		CampaignID int64  `json:"campaign_id"`
 	}
 	_ = json.Unmarshal(body, &req)
 	if req.StepCount <= 0 {
@@ -225,11 +237,52 @@ func (s *Server) handleDraftSequence(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	yamlOut := b.String()
+	seq, err := internal.ParseSequenceFromBytes([]byte(yamlOut))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "invalid_draft", err.Error())
+		return
+	}
+	samples := []map[string]string{
+		{"first_name": "Ada", "last_name": "Lovelace", "company": "Acme", "email": "ada@acme.com", "domain": "acme.com"},
+		{"first_name": "Alan", "last_name": "Turing", "company": "Bletchley", "email": "alan@bletchley.example", "domain": "bletchley.example"},
+	}
+	var preview []map[string]any
+	for _, fields := range samples {
+		steps := make([]map[string]string, 0, len(seq.Steps))
+		for _, st := range seq.Steps {
+			steps = append(steps, map[string]string{
+				"step":    fmt.Sprintf("%d", st.Step),
+				"subject": internal.RenderTemplate(st.Subject, fields),
+				"body":    internal.RenderTemplate(st.Body, fields),
+			})
+		}
+		preview = append(preview, map[string]any{"lead": fields, "steps": steps})
+	}
+
+	var warnings []string
+	warnings = append(warnings, "draft only — never auto-activates")
+	if req.CampaignID > 0 {
+		var status string
+		if err := queryRow(s.Store.DB, `SELECT status FROM campaigns WHERE id = ?`, req.CampaignID).Scan(&status); err != nil {
+			writeErr(w, http.StatusBadRequest, "campaign_not_found", "campaign_id not found")
+			return
+		}
+		if status != "draft" && status != "paused" {
+			writeErr(w, http.StatusBadRequest, "not_draft", "refusing to overwrite sequence on "+status+" campaign")
+			return
+		}
+		_, _ = exec(s.Store.DB, `UPDATE campaigns SET sequence_content = ? WHERE id = ?`, yamlOut, req.CampaignID)
+		warnings = append(warnings, "sequence stored on draft campaign; preview then human activate")
+	}
+
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"sequence_yaml": yamlOut,
 		"draft_only":    true,
-		"next_actions":  []string{"review YAML", "attach to draft campaign", "preview", "human activate"},
-	}, Warnings: []string{"draft only — never auto-activates"}})
+		"valid":         true,
+		"step_count":    len(seq.Steps),
+		"preview":       preview,
+		"next_actions":  []string{"review YAML", "preview campaign", "human activate"},
+	}, Warnings: warnings})
 }
 
 func (s *Server) handleSuggestReply(w http.ResponseWriter, r *http.Request) {
