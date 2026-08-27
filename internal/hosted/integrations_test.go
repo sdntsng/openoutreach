@@ -214,3 +214,16 @@ func TestCapabilitiesHonorFeatureFlags(t *testing.T) {
 	}
 }
 
+func TestMicrosoftOAuthStartRequiresConfig(t *testing.T) {
+	t.Setenv("MICROSOFT_CLIENT_ID", "")
+	t.Setenv("MICROSOFT_CLIENT_SECRET", "")
+	t.Setenv("FEATURE_MICROSOFT", "1")
+	srv, _ := setupHosted(t)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/microsoft/oauth/start", strings.NewReader("{}"))
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 without microsoft client, got %d %s", rr.Code, rr.Body.String())
+	}
+}
+

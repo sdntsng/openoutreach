@@ -395,7 +395,10 @@ Post-deploy checklist:
      Or set AUTH_MODE=hosted for in-app Google/email at $base/sign-in
   2. Google OAuth redirect URI (Gmail):
      ${base}/api/v1/accounts/google/oauth/callback
-  3. Settings → Connect Google in the dashboard
+  3. Microsoft OAuth redirect URI (optional):
+     ${base}/api/v1/accounts/microsoft/oauth/callback
+     Access bypass required (see setup-cf-access.sh).
+  4. Settings → Sending Accounts → Connect Google / Microsoft / SMTP
 
 Smoke test:
   curl -sS "$base/internal/health" -H "X-Internal-Token: \$INTERNAL_CONTAINER_TOKEN"

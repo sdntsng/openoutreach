@@ -46,3 +46,21 @@ State is stored server-side and single-use.
 4. Optionally override callback with `GOOGLE_REDIRECT_URL` if using a custom domain path.
 
 If Google secrets are missing, OAuth start returns `oauth_not_configured` — set secrets and retry.
+
+## Microsoft 365 / Outlook
+
+Same vault pattern as Gmail (`CREDENTIAL_ENCRYPTION_KEY`). Provider implements `GWSClient` (`MicrosoftGraphProvider`); tick treats `provider=microsoft` like GWS for send + reply poll.
+
+Scopes: `openid` `email` `offline_access` `Mail.Send` `Mail.Read` `User.Read`.
+
+API:
+
+- `POST /api/v1/accounts/microsoft/oauth/start` → `{ authorize_url }` (hidden unless `FEATURE_MICROSOFT=1` and `MICROSOFT_CLIENT_ID/SECRET` are set)
+- `GET /api/v1/accounts/microsoft/oauth/callback?code&state`
+
+Redirect URI: `{PUBLIC_BASE_URL}/api/v1/accounts/microsoft/oauth/callback`
+
+Cloudflare Access must **bypass** that callback (Worker already treats it as a public path). `scripts/setup-cf-access.sh` creates the bypass app.
+
+Tokens live in `microsoft_credentials` and are never returned from API/MCP.
+

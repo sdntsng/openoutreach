@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -190,20 +191,20 @@ func (p *MicrosoftGraphProvider) SendEmail(account, to, rawMsg, threadID string)
 	}
 	subject, bodyText := parseRawMessage(rawMsg)
 	message := map[string]any{
-		"message": map[string]any{
-			"subject": subject,
-			"body": map[string]any{
-				"contentType": "Text",
-				"content":     bodyText,
-			},
-			"toRecipients": []map[string]any{
-				{"emailAddress": map[string]string{"address": to}},
-			},
+		"subject": subject,
+		"body": map[string]any{
+			"contentType": "Text",
+			"content":     bodyText,
 		},
-		"saveToSentItems": true,
+		"toRecipients": []map[string]any{
+			{"emailAddress": map[string]string{"address": to}},
+		},
+	}
+	if threadID != "" && !strings.HasPrefix(threadID, "msgraph-") {
+		message["conversationId"] = threadID
 	}
 	raw, _ := json.Marshal(message)
-	req, err := http.NewRequest(http.MethodPost, "https://graph.microsoft.com/v1.0/me/sendMail", bytes.NewReader(raw))
+	req, err := http.NewRequest(http.MethodPost, "https://graph.microsoft.com/v1.0/me/messages", bytes.NewReader(raw))
 	if err != nil {
 		return "", "", err
 	}
@@ -213,16 +214,36 @@ func (p *MicrosoftGraphProvider) SendEmail(account, to, rawMsg, threadID string)
 	if err != nil {
 		return "", "", err
 	}
-	defer res.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	res.Body.Close()
 	if res.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(res.Body, 300))
-		return "", "", fmt.Errorf("graph sendMail HTTP %d: %s", res.StatusCode, string(b))
+		return "", "", fmt.Errorf("graph create message HTTP %d: %s", res.StatusCode, truncateBytes(body, 300))
 	}
-	msgID := fmt.Sprintf("msgraph-%d", time.Now().UnixNano())
-	if threadID == "" {
-		threadID = msgID
+	var created struct {
+		ID             string `json:"id"`
+		ConversationID string `json:"conversationId"`
 	}
-	return msgID, threadID, nil
+	if err := json.Unmarshal(body, &created); err != nil || created.ID == "" {
+		return "", "", fmt.Errorf("graph create message: missing id")
+	}
+	sendReq, err := http.NewRequest(http.MethodPost, "https://graph.microsoft.com/v1.0/me/messages/"+url.PathEscape(created.ID)+"/send", nil)
+	if err != nil {
+		return "", "", err
+	}
+	sendReq.Header.Set("Authorization", "Bearer "+token)
+	sendRes, err := p.client.Do(sendReq)
+	if err != nil {
+		return "", "", err
+	}
+	defer sendRes.Body.Close()
+	if sendRes.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(sendRes.Body, 300))
+		return "", "", fmt.Errorf("graph send HTTP %d: %s", sendRes.StatusCode, string(b))
+	}
+	if created.ConversationID == "" {
+		created.ConversationID = created.ID
+	}
+	return created.ID, created.ConversationID, nil
 }
 
 func parseRawMessage(rawMsg string) (subject, body string) {
@@ -260,58 +281,113 @@ func (p *MicrosoftGraphProvider) ListMessages(account, query string, includeSpam
 		return nil, fmt.Errorf("graph list messages HTTP %d: %s", res.StatusCode, truncateBytes(body, 200))
 	}
 	var parsed struct {
-		Value []struct {
-			ID               string `json:"id"`
-			Subject          string `json:"subject"`
-			BodyPreview      string `json:"bodyPreview"`
-			ConversationID   string `json:"conversationId"`
-			ReceivedDateTime string `json:"receivedDateTime"`
-			From             struct {
-				EmailAddress struct {
-					Address string `json:"address"`
-				} `json:"emailAddress"`
-			} `json:"from"`
-		} `json:"value"`
+		Value []json.RawMessage `json:"value"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, err
 	}
 	out := make([]internal.GWSMessage, 0, len(parsed.Value))
-	for _, m := range parsed.Value {
-		out = append(out, internal.GWSMessage{
-			ID: m.ID, ThreadID: m.ConversationID, Subject: m.Subject,
-			Snippet: m.BodyPreview, From: m.From.EmailAddress.Address,
-			Headers: map[string]string{"Subject": m.Subject},
-		})
+	for _, raw := range parsed.Value {
+		msg, err := parseGraphMessage(raw)
+		if err != nil {
+			continue
+		}
+		out = append(out, msg)
 	}
 	return out, nil
 }
 
 func (p *MicrosoftGraphProvider) GetMessage(account, msgID string) (*internal.GWSMessage, error) {
-	msgs, err := p.ListMessages(account, "")
+	token, err := p.tokenFor(account)
 	if err != nil {
 		return nil, err
 	}
-	for i := range msgs {
-		if msgs[i].ID == msgID {
-			return &msgs[i], nil
-		}
+	req, err := http.NewRequest(http.MethodGet, "https://graph.microsoft.com/v1.0/me/messages/"+url.PathEscape(msgID), nil)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("message not found")
+	req.Header.Set("Authorization", "Bearer "+token)
+	res, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return nil, fmt.Errorf("graph get message HTTP %d: %s", res.StatusCode, truncateBytes(body, 200))
+	}
+	msg, err := parseGraphMessage(body)
+	if err != nil {
+		return nil, err
+	}
+	return &msg, nil
 }
 
 func (p *MicrosoftGraphProvider) GetThreadMessages(account, threadID string) ([]internal.GWSMessage, error) {
-	all, err := p.ListMessages(account, "")
+	token, err := p.tokenFor(account)
 	if err != nil {
 		return nil, err
 	}
-	var out []internal.GWSMessage
-	for _, m := range all {
-		if m.ThreadID == threadID {
-			out = append(out, m)
+	u := "https://graph.microsoft.com/v1.0/me/messages?$top=50&$filter=" + url.QueryEscape("conversationId eq '"+strings.ReplaceAll(threadID, "'", "''")+"'")
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	res, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return nil, fmt.Errorf("graph thread HTTP %d: %s", res.StatusCode, truncateBytes(body, 200))
+	}
+	return parseGraphMessageList(body)
+}
+
+func parseGraphMessageList(body []byte) ([]internal.GWSMessage, error) {
+	var parsed struct {
+		Value []json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	out := make([]internal.GWSMessage, 0, len(parsed.Value))
+	for _, raw := range parsed.Value {
+		msg, err := parseGraphMessage(raw)
+		if err != nil {
+			continue
 		}
+		out = append(out, msg)
 	}
 	return out, nil
+}
+
+func parseGraphMessage(body []byte) (internal.GWSMessage, error) {
+	var m struct {
+		ID             string `json:"id"`
+		Subject        string `json:"subject"`
+		BodyPreview    string `json:"bodyPreview"`
+		ConversationID string `json:"conversationId"`
+		InternetID     string `json:"internetMessageId"`
+		From           struct {
+			EmailAddress struct {
+				Address string `json:"address"`
+			} `json:"emailAddress"`
+		} `json:"from"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return internal.GWSMessage{}, err
+	}
+	headers := map[string]string{"Subject": m.Subject}
+	if m.InternetID != "" {
+		headers["Message-ID"] = m.InternetID
+	}
+	return internal.GWSMessage{
+		ID: m.ID, ThreadID: m.ConversationID, Subject: m.Subject,
+		Snippet: m.BodyPreview, From: m.From.EmailAddress.Address, Headers: headers,
+	}, nil
 }
 
 func (s *Server) handleMicrosoftOAuthStart(w http.ResponseWriter, r *http.Request) {

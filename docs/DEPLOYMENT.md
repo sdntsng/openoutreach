@@ -117,6 +117,9 @@ Cron: `*/2 * * * *` (UTC). Cron does not imply a send — spacing comes from `sc
 | `BETTER_AUTH_SECRET` | Hosted mode | `openssl rand -hex 32` — dashboard sessions |
 | `AUTH_ALLOWED_EMAILS` | No | Comma-separated allowlist (Access policy + Better Auth signup) |
 | `GOOGLE_REDIRECT_URL` | No | Defaults to `{PUBLIC_BASE_URL}/api/v1/accounts/google/oauth/callback` |
+| `MICROSOFT_CLIENT_ID` | For Outlook | Entra ID app registration |
+| `MICROSOFT_CLIENT_SECRET` | For Outlook | Entra ID client secret |
+| `MICROSOFT_TENANT_ID` | No | Default `common` |
 
 ## Post-deploy checklist
 
@@ -152,7 +155,7 @@ Same three modes as OpenSEO self-host / hosted. Set `AUTH_MODE` on the Worker (d
 
 ### Cloudflare Access (default)
 
-Protect `/`, `/api/*`, `/mcp/*` at the Access application. Bypass `/t/*`, `/internal/*` (Worker still requires `X-Internal-Token`), and `{PUBLIC_BASE_URL}/api/v1/accounts/google/oauth/callback`.
+Protect `/`, `/api/*`, `/mcp/*` at the Access application. Bypass `/t/*`, `/internal/*` (Worker still requires `X-Internal-Token`), `{PUBLIC_BASE_URL}/api/v1/accounts/google/oauth/callback`, `{PUBLIC_BASE_URL}/api/v1/accounts/microsoft/oauth/callback`, and Clay/generic ingest `POST /api/v1/integrations/{provider}/ingest`.
 
 CLI (recommended for `openoutreach.siddhant.site` or your custom hostname):
 
