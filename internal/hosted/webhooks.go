@@ -36,12 +36,23 @@ func (s *Server) handleWebhookIngest(w http.ResponseWriter, r *http.Request) {
 		name = "default"
 	}
 	campaignID, _ := strconv.ParseInt(r.URL.Query().Get("campaign_id"), 10, 64)
+	campaignName := strings.TrimSpace(r.URL.Query().Get("campaign_name"))
+	createCampaign := queryTruthy(r.URL.Query().Get("create_campaign")) || queryTruthy(r.URL.Query().Get("create_if_missing"))
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "read_failed", err.Error())
 		return
 	}
+
+	bodyID, bodyName, bodyCreate := webhookCampaignHint(body)
+	if campaignID == 0 {
+		campaignID = bodyID
+	}
+	if campaignName == "" {
+		campaignName = bodyName
+	}
+	createCampaign = createCampaign || bodyCreate
 
 	key := s.encKey()
 	if key != nil {
@@ -73,18 +84,23 @@ func (s *Server) handleWebhookIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	leads, warnings := normalizeWebhookLeads(body)
-	if campaignID == 0 {
-		writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
-			"preview": true, "leads": leads, "count": len(leads), "csv": leadsToCSV(leads),
-		}, Warnings: append(warnings, "pass campaign_id to append; preview only")})
+	campaignID, campaignName, campaignStatus, created, previewNote, resolveErr := s.resolveIngestCampaign(ws, campaignID, campaignName, createCampaign)
+	if resolveErr != nil {
+		writeErr(w, http.StatusBadRequest, "campaign_resolve_failed", resolveErr.Error())
 		return
 	}
-
-	csvData := leadsToCSV(leads)
-	var campaignName string
-	if err := queryRow(s.Store.DB, `SELECT name FROM campaigns WHERE id = ?`, campaignID).Scan(&campaignName); err != nil {
-		writeErr(w, http.StatusBadRequest, "campaign_not_found", "campaign_id not found")
+	if campaignID == 0 {
+		msg := previewNote
+		if msg == "" {
+			msg = "pass campaign_id or campaign_name to append; preview only"
+		}
+		writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+			"preview": true, "leads": leads, "count": len(leads), "csv": leadsToCSV(leads),
+		}, Warnings: append(warnings, msg)})
 		return
+	}
+	if created {
+		warnings = append(warnings, "created draft campaign; not activated")
 	}
 
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
@@ -103,15 +119,111 @@ func (s *Server) handleWebhookIngest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	res, err := internal.AddLeadsToCampaign(s.Store.DB, campaignName, "", csvData)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "import_failed", err.Error())
-		return
+	out := map[string]any{
+		"campaign_id": campaignID, "campaign_name": campaignName, "status": campaignStatus,
+		"campaign_created": created, "count": len(leads),
 	}
-	_ = LogEnrichmentCall(s.Store.DB, ws, provider, "ingest", fmt.Sprintf("campaign=%d n=%d", campaignID, len(leads)), float64(len(leads)))
-	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
-		"campaign_id": campaignID, "imported": res, "count": len(leads),
-	}, Warnings: warnings})
+	if len(leads) > 0 {
+		res, err := internal.AddLeadsToCampaign(s.Store.DB, campaignName, "", leadsToCSV(leads))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "import_failed", err.Error())
+			return
+		}
+		out["imported"] = res
+		_ = LogEnrichmentCall(s.Store.DB, ws, provider, "ingest", fmt.Sprintf("campaign=%d n=%d", campaignID, len(leads)), float64(len(leads)))
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: out, Warnings: warnings})
+}
+
+func (s *Server) resolveIngestCampaign(ws string, campaignID int64, campaignName string, create bool) (int64, string, string, bool, string, error) {
+	ws = strings.TrimSpace(ws)
+	if ws == "" {
+		ws = "default"
+	}
+	if campaignID > 0 {
+		var n, status string
+		err := queryRow(s.Store.DB, `SELECT name, status FROM campaigns WHERE id = ? AND workspace_id = ?`, campaignID, ws).Scan(&n, &status)
+		if err != nil {
+			return 0, "", "", false, "", fmt.Errorf("campaign_id not found")
+		}
+		return campaignID, n, status, false, "", nil
+	}
+	campaignName = strings.TrimSpace(campaignName)
+	if campaignName == "" {
+		return 0, "", "", false, "pass campaign_id or campaign_name to append; preview only", nil
+	}
+	var existingID int64
+	var existingStatus string
+	err := queryRow(s.Store.DB, `SELECT id, status FROM campaigns WHERE workspace_id = ? AND name = ?`, ws, campaignName).Scan(&existingID, &existingStatus)
+	if err == nil {
+		return existingID, campaignName, existingStatus, false, "", nil
+	}
+	if !create {
+		return 0, "", "", false, "campaign not found; pass create_campaign to open a draft (never activates)", nil
+	}
+	var email string
+	if qerr := queryRow(s.Store.DB, `SELECT email FROM accounts WHERE workspace_id = ? AND status = 'active' ORDER BY id LIMIT 1`, ws).Scan(&email); qerr != nil {
+		return 0, "", "", false, "", fmt.Errorf("at least one active sending account is required to create a draft campaign")
+	}
+	res, err := internal.CreateDraftCampaign(s.Store.DB, internal.CreateDraftCampaignOpts{
+		WorkspaceID:   ws,
+		Name:          campaignName,
+		AccountEmails: []string{email},
+	})
+	if err != nil {
+		var retryID int64
+		var retryStatus string
+		if qerr := queryRow(s.Store.DB, `SELECT id, status FROM campaigns WHERE workspace_id = ? AND name = ?`, ws, campaignName).Scan(&retryID, &retryStatus); qerr == nil {
+			return retryID, campaignName, retryStatus, false, "", nil
+		}
+		return 0, "", "", false, "", err
+	}
+	return res.ID, res.Name, "draft", true, "", nil
+}
+
+func webhookCampaignHint(body []byte) (int64, string, bool) {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, "", false
+	}
+	return anyToInt64(raw["campaign_id"]), firstString(raw, "campaign_name"), anyTruthy(raw["create_campaign"]) || anyTruthy(raw["create_if_missing"])
+}
+
+func queryTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func anyTruthy(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return queryTruthy(t)
+	case float64:
+		return t != 0
+	default:
+		return false
+	}
+}
+
+func anyToInt64(v any) int64 {
+	switch t := v.(type) {
+	case float64:
+		return int64(t)
+	case string:
+		n, _ := strconv.ParseInt(strings.TrimSpace(t), 10, 64)
+		return n
+	case json.Number:
+		n, _ := t.Int64()
+		return n
+	default:
+		return 0
+	}
 }
 
 func normalizeWebhookLeads(body []byte) ([]map[string]string, []string) {

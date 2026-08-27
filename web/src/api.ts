@@ -70,6 +70,9 @@ export interface Account {
   workspace_id?: string;
   oauth_health?: string;
   sent_today?: number;
+  warmup_status?: string;
+  reply_mode?: string;
+  domain_verification?: string;
 }
 
 export interface Campaign {
@@ -286,7 +289,12 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  apolloSearch: (body: { q_keywords?: string; credential_name?: string; per_page?: number }) =>
+  apolloSearch: (body: {
+    q_keywords?: string;
+    credential_name?: string;
+    per_page?: number;
+    person_titles?: string[];
+  }) =>
     request<{ leads?: Record<string, string>[]; count?: number; csv?: string }>(
       "/integrations/apollo/search",
       { method: "POST", body: JSON.stringify(body) },

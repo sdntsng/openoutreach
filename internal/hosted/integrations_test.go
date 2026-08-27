@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/andersmyrmel/cold-cli/internal"
 	"github.com/andersmyrmel/cold-cli/internal/hosted"
 )
 
@@ -30,6 +31,9 @@ func TestCapabilitiesAndIntegrationsVault(t *testing.T) {
 	}
 	if !env.Data.Integrations["apollo"] {
 		t.Fatal("expected apollo feature on")
+	}
+	if env.Data.Integrations["warmup"] {
+		t.Fatal("warmup should be off by default")
 	}
 
 	body := `{"provider":"apollo","name":"default","secret":"test-apollo-key-12345678"}`
@@ -280,3 +284,103 @@ func TestResendDisabledAndBounceWebhook(t *testing.T) {
 	}
 }
 
+func TestWebhookCreateDraftFromCampaignName(t *testing.T) {
+	srv, _ := setupHosted(t)
+	if _, err := internal.AddAccountInWorkspace(srv.Store.DB, "default", "sender@example.com", 30, "hosted-mock"); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"email":"ada@acme.com","first_name":"Ada","campaign_name":"clay-inbound","create_campaign":true}`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/integrations/clay/ingest", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("ingest %d %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"status":"active"`) {
+		t.Fatal("ingest must not activate")
+	}
+	if !strings.Contains(rr.Body.String(), `"campaign_created":true`) {
+		t.Fatalf("expected campaign_created: %s", rr.Body.String())
+	}
+	var status string
+	if err := srv.Store.DB.QueryRow(`SELECT status FROM campaigns WHERE name = 'clay-inbound'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "draft" {
+		t.Fatalf("status=%s", status)
+	}
+
+	rr = httptest.NewRecorder()
+	again := httptest.NewRequest(http.MethodPost, "/api/v1/integrations/clay/ingest", strings.NewReader(payload))
+	again.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, again)
+	if rr.Code != 200 {
+		t.Fatalf("append %d %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"campaign_created":true`) {
+		t.Fatalf("second ingest should append existing draft: %s", rr.Body.String())
+	}
+}
+
+func TestAccountsWarmupAndReplyMode(t *testing.T) {
+	t.Setenv("FEATURE_WARMUP", "1")
+	srv, _ := setupHosted(t)
+	if _, err := internal.AddAccountInWorkspace(srv.Store.DB, "default", "sender@example.com", 30, "hosted-mock"); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil))
+	if rr.Code != 200 {
+		t.Fatalf("list %d %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"warmup_status":"unset"`) {
+		t.Fatalf("expected unset warmup: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"reply_mode":"oauth"`) {
+		t.Fatalf("expected oauth reply_mode: %s", rr.Body.String())
+	}
+
+	put := `{"provider":"warmup","name":"default","secret":"warmup-key-12345678"}`
+	rr = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/integrations", strings.NewReader(put))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("put warmup %d %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "warmup-key-12345678") {
+		t.Fatal("warmup secret leaked")
+	}
+
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/settings/capabilities", nil))
+	if !strings.Contains(rr.Body.String(), `"warmup":true`) {
+		t.Fatalf("expected FEATURE_WARMUP in capabilities: %s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil))
+	if rr.Code != 200 {
+		t.Fatalf("list after warmup %d %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"warmup_status":"healthy"`) {
+		t.Fatalf("expected healthy warmup badge: %s", rr.Body.String())
+	}
+
+	t.Setenv("FEATURE_RESEND", "1")
+	rr = httptest.NewRecorder()
+	resend := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/resend", strings.NewReader(`{"email":"from@acme.com","api_key":"re_test_key_xxxx"}`))
+	resend.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, resend)
+	if rr.Code != 200 {
+		t.Fatalf("add resend %d %s", rr.Code, rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil))
+	if !strings.Contains(rr.Body.String(), `"reply_mode":"send_only"`) || !strings.Contains(rr.Body.String(), `"domain_verification":"dns_at_provider"`) {
+		t.Fatalf("expected resend send_only/dns_at_provider: %s", rr.Body.String())
+	}
+}

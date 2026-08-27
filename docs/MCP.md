@@ -4,7 +4,11 @@ Endpoint: `POST /mcp` on the Worker URL (same origin as the dashboard host).
 
 Auth: `Authorization: Bearer $MCP_BEARER_TOKEN` when configured. Bearer bypasses Cloudflare Access on `/mcp` only.
 
-## Cursor MCP config (hosted Worker)
+## Cursor MCP config
+
+Hosted OpenOutreach MCP is **remote HTTP** (`POST /mcp` on the Worker). Cursor can attach either as a native remote server or via a stdio bridge that still talks to that same URL.
+
+### Remote (preferred)
 
 ```json
 {
@@ -20,6 +24,23 @@ Auth: `Authorization: Bearer $MCP_BEARER_TOKEN` when configured. Bearer bypasses
 ```
 
 Replace `YOUR_WORKER.workers.dev` with your Worker hostname. Never commit the bearer token.
+
+### stdio (local process wrapping the hosted URL)
+
+Use stdio when the client only launches a local command. Point the bridge at the **same** Worker `/mcp` URL — this is not a separate local engine.
+
+```json
+{
+  "mcpServers": {
+    "openoutreach": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://YOUR_WORKER.workers.dev/mcp", "--header", "Authorization: Bearer ${MCP_BEARER_TOKEN}"]
+    }
+  }
+}
+```
+
+Do not configure a stdio `cold-cli` MCP as a send path. Create ≠ send still applies: `outreach_activate_campaign` and `outreach_reply_to_thread` require `confirm: true`.
 
 ## Tools
 
@@ -38,7 +59,9 @@ Replace `YOUR_WORKER.workers.dev` with your Worker hostname. Never commit the be
 | outreach_search_leads / blacklist_lead | |
 | outreach_list_capabilities | Operator feature flags (no secrets) |
 | outreach_list_integrations | Masked workspace API keys |
+| outreach_put_integration | Create/rotate credential; secret never echoed |
 | outreach_test_integration | Live/local credential probe |
+| outreach_delete_integration | Delete credential by id |
 | outreach_apollo_search | Preview Apollo people → CSV; does not activate |
 | outreach_search_leads | Workspace search, or `provider=apollo` connector preview |
 | outreach_enrich_lead | Email enrich preview (local + connector) |

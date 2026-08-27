@@ -153,7 +153,7 @@ export default function AccountsPage() {
         </div>
       </div>
       <p className="muted">
-        Connect Gmail, Microsoft 365, or SMTP/IMAP mailboxes. OAuth callbacks never expose tokens to the browser.
+        Connect Gmail, Microsoft 365, SMTP/IMAP, or a send-only API mailer. Domain verification for Resend/SES is DNS at the provider. Warmup is a status badge only — it never sends via Tick.
       </p>
       {connected && (
         <div className="panel" style={{ marginBottom: "1rem" }}>
@@ -222,13 +222,16 @@ export default function AccountsPage() {
             <th>Email</th>
             <th>Status</th>
             <th>Provider</th>
+            <th>Reply</th>
+            <th>Domain</th>
+            <th>Warmup</th>
             <th>Daily limit</th>
           </tr>
         </thead>
         <tbody>
           {accounts.length === 0 ? (
             <tr>
-              <td colSpan={4} className="muted">
+              <td colSpan={7} className="muted">
                 No accounts connected.
               </td>
             </tr>
@@ -238,6 +241,9 @@ export default function AccountsPage() {
                 <td>{a.email}</td>
                 <td>{a.status}</td>
                 <td>{a.provider || "—"}</td>
+                <td>{a.reply_mode || "—"}</td>
+                <td>{a.domain_verification || "—"}</td>
+                <td>{a.warmup_status && a.warmup_status !== "unset" ? a.warmup_status : "—"}</td>
                 <td>{a.daily_limit ?? "—"}</td>
               </tr>
             ))

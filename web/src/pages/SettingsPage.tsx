@@ -20,6 +20,7 @@ export default function SettingsPage() {
       ["webhook", "webhook"],
       ["sheets", "sheets"],
       ["hunter", "hunter"],
+      ["warmup", "warmup"],
       ["secret", "secret"],
     ] as const
   ).filter(([key]) => {
@@ -218,6 +219,23 @@ export default function SettingsPage() {
           Endpoint
           <input readOnly value={caps?.mcp_endpoint || "—"} />
         </label>
+        <div className="row-actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={!caps?.mcp_endpoint}
+            onClick={() => {
+              const url = caps?.mcp_endpoint || "";
+              if (!url) return;
+              void navigator.clipboard.writeText(url).then(
+                () => setNote("MCP endpoint copied."),
+                () => setNote("Copy failed — select the endpoint field and copy manually."),
+              );
+            }}
+          >
+            Copy
+          </button>
+        </div>
         <label>
           Bearer configured
           <input readOnly value={caps?.mcp_configured ? "yes" : "no"} />

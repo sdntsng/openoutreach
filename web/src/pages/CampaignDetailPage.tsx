@@ -21,6 +21,7 @@ export default function CampaignDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [apolloQ, setApolloQ] = useState("");
+  const [apolloTitles, setApolloTitles] = useState("");
   const [apolloRows, setApolloRows] = useState<Record<string, string>[]>([]);
   const [sheetURL, setSheetURL] = useState("");
 
@@ -150,7 +151,15 @@ export default function CampaignDetailPage() {
               <input
                 value={apolloQ}
                 onChange={(e) => setApolloQ(e.target.value)}
-                placeholder="keywords, title, company…"
+                placeholder="keywords, company…"
+              />
+            </label>
+            <label>
+              Titles (optional)
+              <input
+                value={apolloTitles}
+                onChange={(e) => setApolloTitles(e.target.value)}
+                placeholder="CRO, CMO"
               />
             </label>
             <button
@@ -159,8 +168,16 @@ export default function CampaignDetailPage() {
               onClick={() => {
                 setBusy(true);
                 setError(null);
+                const titles = apolloTitles
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean);
                 api
-                  .apolloSearch({ q_keywords: apolloQ.trim(), per_page: 10 })
+                  .apolloSearch({
+                    q_keywords: apolloQ.trim(),
+                    per_page: 10,
+                    person_titles: titles.length ? titles : undefined,
+                  })
                   .then((res) => setApolloRows(res.leads || []))
                   .catch((err: Error) => setError(err.message))
                   .finally(() => setBusy(false));

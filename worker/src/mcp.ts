@@ -455,6 +455,46 @@ const TOOLS: ToolDef[] = [
     }),
   },
   {
+    name: "outreach_put_integration",
+    description:
+      "Create or rotate a workspace integration credential (Apollo, Clay, webhook, warmup, etc.). Never returns the secret.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        provider: { type: "string" },
+        name: { type: "string" },
+        secret: { type: "string" },
+        metadata: { type: "string" },
+      },
+      required: ["provider", "secret"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: "/api/v1/integrations",
+      body: {
+        provider: a.provider,
+        name: a.name || "default",
+        secret: a.secret,
+        metadata: a.metadata,
+      },
+    }),
+  },
+  {
+    name: "outreach_delete_integration",
+    description: "Delete a workspace integration credential by id. Never returns secrets.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "number" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "DELETE",
+      path: `/api/v1/integrations/${enc(a.id)}`,
+    }),
+  },
+  {
     name: "outreach_apollo_search",
     description:
       "Search Apollo people using a stored apollo credential (preview only). Import via outreach_add_leads; never auto-activates.",

@@ -35,16 +35,20 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type acct struct {
-		ID          int64   `json:"id"`
-		WorkspaceID string  `json:"workspace_id"`
-		Email       string  `json:"email"`
-		DailyLimit  int     `json:"daily_limit"`
-		Status      string  `json:"status"`
-		Provider    string  `json:"provider"`
-		LastSendAt  *string `json:"last_send_at,omitempty"`
-		SentToday   int     `json:"sent_today"`
-		OAuthHealth string  `json:"oauth_health"`
+		ID                 int64   `json:"id"`
+		WorkspaceID        string  `json:"workspace_id"`
+		Email              string  `json:"email"`
+		DailyLimit         int     `json:"daily_limit"`
+		Status             string  `json:"status"`
+		Provider           string  `json:"provider"`
+		LastSendAt         *string `json:"last_send_at,omitempty"`
+		SentToday          int     `json:"sent_today"`
+		OAuthHealth        string  `json:"oauth_health"`
+		WarmupStatus       string  `json:"warmup_status"`
+		ReplyMode          string  `json:"reply_mode"`
+		DomainVerification string  `json:"domain_verification"`
 	}
+	warmup := workspaceWarmupStatus(s.Store.DB, ws)
 	var list []acct
 	for rows.Next() {
 		var a acct
@@ -65,6 +69,8 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 			oauth = "ok"
 		}
 		a.OAuthHealth = oauth
+		a.WarmupStatus = warmup
+		a.ReplyMode, a.DomainVerification = mailboxSurface(a.Provider)
 		list = append(list, a)
 	}
 	if list == nil {
@@ -88,11 +94,63 @@ func (s *Server) handleAccountStatus(w http.ResponseWriter, r *http.Request) {
 	if oauth == "" {
 		oauth = "ok"
 	}
+	replyMode, domainVer := mailboxSurface(acct.Provider)
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"id": acct.ID, "email": acct.Email, "status": acct.Status,
 		"provider": acct.Provider, "daily_limit": acct.DailyLimit,
-		"oauth_health": oauth,
+		"oauth_health":  oauth,
+		"warmup_status": workspaceWarmupStatus(s.Store.DB, s.workspaceFromRequest(r)),
+		"reply_mode":    replyMode, "domain_verification": domainVer,
 	}})
+}
+
+// mailboxSurface is the Accounts-page health view for a send provider.
+// API mailers are send-only (bounce webhook, no IMAP/Graph poll). Warmup is never a send path.
+func mailboxSurface(provider string) (replyMode, domainVerification string) {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "resend", "ses", "mailgun", "postmark":
+		return "send_only", "dns_at_provider"
+	case "smtp_imap", "smtp":
+		return "imap", "smtp"
+	default:
+		return "oauth", "oauth"
+	}
+}
+
+func workspaceWarmupStatus(db *sql.DB, ws string) string {
+	var status, metadata string
+	err := queryRow(db, `
+		SELECT status, COALESCE(metadata, '')
+		FROM integration_credentials
+		WHERE workspace_id = ? AND lower(provider) = 'warmup'
+		ORDER BY id DESC LIMIT 1`, ws).Scan(&status, &metadata)
+	if err != nil {
+		return "unset"
+	}
+	if meta := jsonStringField(metadata, "status"); meta != "" {
+		status = meta
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "active", "ok", "healthy", "configured":
+		return "healthy"
+	case "error", "failed", "unhealthy":
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+func jsonStringField(raw, key string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return ""
+	}
+	s, _ := m[key].(string)
+	return strings.TrimSpace(s)
 }
 
 func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
@@ -282,17 +340,17 @@ func (s *Server) handleListCampaigns(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type row struct {
-		ID       int64   `json:"id"`
-		Name     string  `json:"name"`
-		Status   string  `json:"status"`
-		Leads    int     `json:"leads"`
-		Sent     int     `json:"sent"`
-		Replies  int     `json:"replies"`
-		Bounces  int     `json:"bounces"`
-		ApproxOpens int  `json:"approx_opens"`
-		ReplyRate float64 `json:"reply_rate"`
-		NextSend *string `json:"next_send,omitempty"`
-		CreatedAt string `json:"created_at"`
+		ID          int64   `json:"id"`
+		Name        string  `json:"name"`
+		Status      string  `json:"status"`
+		Leads       int     `json:"leads"`
+		Sent        int     `json:"sent"`
+		Replies     int     `json:"replies"`
+		Bounces     int     `json:"bounces"`
+		ApproxOpens int     `json:"approx_opens"`
+		ReplyRate   float64 `json:"reply_rate"`
+		NextSend    *string `json:"next_send,omitempty"`
+		CreatedAt   string  `json:"created_at"`
 	}
 	var list []row
 	for rows.Next() {
@@ -371,13 +429,13 @@ func (s *Server) handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 		_ = SetHostedKV(s.Store.DB, fmt.Sprintf("campaign_open_tracking:%d", res.ID), "1")
 	}
 	writeJSON(w, http.StatusCreated, envelope{Data: map[string]any{
-		"campaign_id":         res.ID,
-		"status":              "draft",
-		"name":                res.Name,
-		"lead_count":          res.Leads,
-		"scheduled_messages":  res.ScheduledSends,
-		"warnings":            res.Warnings,
-		"next_actions":        []string{"preview_campaign", "activate_campaign"},
+		"campaign_id":        res.ID,
+		"status":             "draft",
+		"name":               res.Name,
+		"lead_count":         res.Leads,
+		"scheduled_messages": res.ScheduledSends,
+		"warnings":           res.Warnings,
+		"next_actions":       []string{"preview_campaign", "activate_campaign"},
 	}, Warnings: res.Warnings})
 }
 
@@ -417,7 +475,7 @@ func (s *Server) handleActivateCampaign(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"name": name, "status": "active",
-		"message": "Campaign activated. Cron/tick will send due messages. This action is consequential.",
+		"message":      "Campaign activated. Cron/tick will send due messages. This action is consequential.",
 		"next_actions": []string{"get_campaign_stats", "list_replies"},
 	}})
 }

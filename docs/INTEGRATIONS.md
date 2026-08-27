@@ -101,7 +101,7 @@ Typical cost: SES ~$0.10/1k emails; Resend ~$20/mo + usage.
 | Tool area | Issue | Notes |
 |-----------|-------|-------|
 | Connector search/enrich/import | [#12](https://github.com/sdntsng/openoutreach/issues/12) | Preview → draft campaign only |
-| List/test integrations (no secrets) | [#7](https://github.com/sdntsng/openoutreach/issues/7) | |
+| List/put/test/delete integrations (no secrets) | [#7](https://github.com/sdntsng/openoutreach/issues/7) | MCP twins of Settings vault CRUD |
 | Draft sequence from brief | [#13](https://github.com/sdntsng/openoutreach/issues/13) | Draft-only |
 | Reply triage / suggest | [#14](https://github.com/sdntsng/openoutreach/issues/14) | Send needs `confirm` |
 | Preflight before activate | [#15](https://github.com/sdntsng/openoutreach/issues/15) | Non-mutating |
@@ -144,20 +144,75 @@ Accounts page stays the place to **connect mailboxes**; Settings owns **API keys
 
 ### Webhook ingest (Clay / generic)
 
-`POST /api/v1/integrations/{clay|generic}/ingest?name=default&campaign_id=123`
+`POST /api/v1/integrations/{clay|generic}/ingest?name=default`
 
 Cloudflare Access bypasses this path. Optional HMAC: `X-OpenOutreach-Signature` or `X-Clay-Signature` = hex HMAC-SHA256 of the raw body using the stored webhook secret. Optional `Idempotency-Key` prevents duplicate imports on retries.
 
+Target a campaign with `campaign_id` (query or body) **or** `campaign_name`. Set `create_campaign` / `create_if_missing` to open a **draft** campaign when the name is missing. Ingest **never activates**.
+
 ```http
-POST /api/v1/integrations/clay/ingest?campaign_id=42
+POST /api/v1/integrations/clay/ingest
 Content-Type: application/json
 X-OpenOutreach-Signature: <hex hmac-sha256>
 Idempotency-Key: clay-row-abc123
 
-{"email":"ada@acme.com","first_name":"Ada","company":"Acme"}
+{"email":"ada@acme.com","first_name":"Ada","company":"Acme","campaign_name":"Q3 outbound","create_campaign":true}
 ```
 
-Without `campaign_id` the payload is preview-only (does not activate). Clay HTTP columns can POST the same JSON.
+Without `campaign_id` or a resolvable `campaign_name` the payload is preview-only. Clay HTTP API columns can POST the same JSON.
+
+### OpenAPI (ingest)
+
+```yaml
+paths:
+  /api/v1/integrations/{provider}/ingest:
+    post:
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema: { type: string, enum: [clay, generic] }
+        - in: query
+          name: name
+          schema: { type: string, default: default }
+        - in: query
+          name: campaign_id
+          schema: { type: integer }
+        - in: query
+          name: campaign_name
+          schema: { type: string }
+        - in: query
+          name: create_campaign
+          schema: { type: boolean }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string }
+                first_name: { type: string }
+                last_name: { type: string }
+                company: { type: string }
+                campaign_id: { type: integer }
+                campaign_name: { type: string }
+                create_campaign: { type: boolean }
+                leads:
+                  type: array
+                  items: { type: object }
+            examples:
+              clay_column:
+                value:
+                  email: ada@acme.com
+                  first_name: Ada
+                  company: Acme
+                  campaign_name: Q3 outbound
+                  create_campaign: true
+      responses:
+        "200":
+          description: Preview, import, or idempotent replay. status is never flipped to active.
+```
 
 Scheduled Google Sheets: store a `sheets` credential whose metadata is `{"url":"<sheet or csv url>","campaign_id":123}`. Hosted tick (Worker cron `*/2`) re-imports; existing campaign emails are skipped.
 
@@ -178,7 +233,7 @@ Webhook + Sheets ([#11](https://github.com/sdntsng/openoutreach/issues/11)), Cla
 Sequence draft, reply triage, preflight ([#13](https://github.com/sdntsng/openoutreach/issues/13)–[#15](https://github.com/sdntsng/openoutreach/issues/15)); Mintlify MCP docs ([#21](https://github.com/sdntsng/openoutreach/issues/21)).
 
 **Phase 4 — API mailers + warmup (deferred)**  
-[#5](https://github.com/sdntsng/openoutreach/issues/5): Resend account (`FEATURE_RESEND=1`) is send-only via `GWSClient`; bounce webhook `POST /api/v1/integrations/resend/events`. SES remains the SMTP/IMAP path. Warmup network ([#25](https://github.com/sdntsng/openoutreach/issues/25)) is a capabilities flag only — **never** coupled to `engine.Tick`.
+[#5](https://github.com/sdntsng/openoutreach/issues/5): Resend account (`FEATURE_RESEND=1`) is send-only via `GWSClient`; bounce webhook `POST /api/v1/integrations/resend/events`. SES remains the SMTP/IMAP path. Accounts list surfaces `reply_mode` (`oauth` / `imap` / `send_only`) and `domain_verification` (`oauth` / `smtp` / `dns_at_provider`). Warmup network ([#25](https://github.com/sdntsng/openoutreach/issues/25)) is a vault + capabilities flag + Accounts **status badge** (`healthy` / `unknown` / `error`) — **never** coupled to `engine.Tick`.
 
 ---
 
