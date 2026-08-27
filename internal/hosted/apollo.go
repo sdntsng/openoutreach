@@ -97,6 +97,9 @@ func SearchApolloPeople(db *sql.DB, key []byte, workspaceID string, req ApolloSe
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode == 429 || res.StatusCode == 402 {
+		return nil, fmt.Errorf("apollo credits exhausted or rate limited (HTTP %d): %s", res.StatusCode, truncateBytes(body, 200))
+	}
 	if res.StatusCode >= 400 {
 		return nil, fmt.Errorf("apollo search HTTP %d: %s", res.StatusCode, truncateBytes(body, 200))
 	}
@@ -171,5 +174,103 @@ func (s *Server) handleApolloSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"leads": people, "count": len(people), "csv": leadsToCSV(people),
 		"next_actions": []string{"review preview", "POST /api/v1/campaigns/{id}/leads with csv", "do not activate without confirm"},
+	}})
+}
+
+func (s *Server) handleConnectorSearch(w http.ResponseWriter, r *http.Request) {
+	key := s.encKey()
+	if key == nil {
+		writeErr(w, http.StatusServiceUnavailable, "vault_unconfigured", "CREDENTIAL_ENCRYPTION_KEY is required")
+		return
+	}
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+	var req struct {
+		Provider       string `json:"provider"`
+		Q              string `json:"q"`
+		QKeywords      string `json:"q_keywords"`
+		Limit          int    `json:"limit"`
+		CredentialName string `json:"credential_name"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", "invalid json body")
+		return
+	}
+	q := strings.TrimSpace(req.QKeywords)
+	if q == "" {
+		q = strings.TrimSpace(req.Q)
+	}
+	provider := strings.ToLower(strings.TrimSpace(req.Provider))
+	if provider == "" {
+		provider = "apollo"
+	}
+	if provider != "apollo" {
+		writeErr(w, http.StatusBadRequest, "unsupported_provider", "search provider must be apollo")
+		return
+	}
+	caps := BuildCapabilities(s.WorkspaceID, s.PublicBaseURL, true, s.OAuth != nil)
+	if !caps.Integrations["apollo"] {
+		writeErr(w, http.StatusForbidden, "feature_disabled", "FEATURE_APOLLO is disabled")
+		return
+	}
+	people, err := SearchApolloPeople(s.Store.DB, key, s.workspaceFromRequest(r), ApolloSearchRequest{
+		CredentialName: req.CredentialName, QKeywords: q, PerPage: req.Limit,
+	})
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "search_failed", err.Error())
+		return
+	}
+	sample := people
+	if len(sample) > 5 {
+		sample = sample[:5]
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+		"provider": provider, "leads": people, "sample": sample, "count": len(people),
+		"csv": leadsToCSV(people), "preview": true,
+	}})
+}
+
+func (s *Server) handleEnrichLead(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+	var req struct {
+		Email          string `json:"email"`
+		Provider       string `json:"provider"`
+		CredentialName string `json:"credential_name"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || strings.TrimSpace(req.Email) == "" {
+		writeErr(w, http.StatusBadRequest, "invalid_json", "email is required")
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	local := map[string]string{"email": email}
+	var first, last, company, domain string
+	_ = queryRow(s.Store.DB, `
+		SELECT COALESCE(first_name,''), COALESCE(last_name,''), COALESCE(company,''), COALESCE(domain,'')
+		FROM leads WHERE lower(email) = ? LIMIT 1`, email).Scan(&first, &last, &company, &domain)
+	local["first_name"] = first
+	local["last_name"] = last
+	local["company"] = company
+	local["domain"] = domain
+
+	var remote []map[string]string
+	provider := strings.ToLower(strings.TrimSpace(req.Provider))
+	if provider == "" || provider == "apollo" {
+		key := s.encKey()
+		caps := BuildCapabilities(s.WorkspaceID, s.PublicBaseURL, key != nil, s.OAuth != nil)
+		if key != nil && caps.Integrations["apollo"] {
+			people, err := SearchApolloPeople(s.Store.DB, key, s.workspaceFromRequest(r), ApolloSearchRequest{
+				CredentialName: req.CredentialName, QKeywords: email, PerPage: 1,
+			})
+			if err != nil {
+				writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+					"email": email, "local": local, "count": 0, "preview": true,
+				}, Warnings: []string{err.Error()}})
+				return
+			}
+			remote = people
+		}
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+		"email": email, "local": local, "enriched": remote, "count": len(remote),
+		"preview": true,
 	}})
 }

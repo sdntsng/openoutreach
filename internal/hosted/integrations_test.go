@@ -99,6 +99,28 @@ func TestSheetsImportPreview(t *testing.T) {
 	}
 }
 
+func TestWebhookHMACAndIdempotencyPreview(t *testing.T) {
+	srv, _ := setupHosted(t)
+	put := `{"provider":"generic","name":"default","hmac_secret":"whsec-test"}`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/integrations/webhooks", strings.NewReader(put))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("put webhook %d %s", rr.Code, rr.Body.String())
+	}
+
+	payload := `{"email":"ada@acme.com","first_name":"Ada"}`
+	rr = httptest.NewRecorder()
+	bad := httptest.NewRequest(http.MethodPost, "/api/v1/integrations/generic/ingest", strings.NewReader(payload))
+	bad.Header.Set("Content-Type", "application/json")
+	bad.Header.Set("X-OpenOutreach-Signature", "deadbeef")
+	srv.Handler().ServeHTTP(rr, bad)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 bad hmac, got %d %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestSMTPAccountRequiresVaultPassword(t *testing.T) {
 	srv, _ := setupHosted(t)
 	body := `{

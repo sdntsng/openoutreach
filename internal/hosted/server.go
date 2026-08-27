@@ -190,6 +190,8 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("POST /api/v1/integrations/test", s.handleTestIntegration)
 	s.Mux.HandleFunc("POST /api/v1/integrations/{id}/test", s.handleTestIntegration)
 	s.Mux.HandleFunc("POST /api/v1/integrations/apollo/search", s.handleApolloSearch)
+	s.Mux.HandleFunc("POST /api/v1/integrations/search", s.handleConnectorSearch)
+	s.Mux.HandleFunc("POST /api/v1/integrations/enrich", s.handleEnrichLead)
 	s.Mux.HandleFunc("POST /api/v1/integrations/sheets/import", s.handleSheetsImport)
 	s.Mux.HandleFunc("POST /api/v1/integrations/webhooks", s.handlePutWebhookEndpoint)
 	s.Mux.HandleFunc("POST /api/v1/integrations/{provider}/ingest", s.handleWebhookIngest)
@@ -284,6 +286,7 @@ func (s *Server) handleTick(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "tick_failed", err.Error())
 		return
 	}
+	s.SyncScheduledSheets()
 	_ = TouchLastTick(s.Store.DB)
 	if result.RepliesDetected > 0 || result.BouncesDetected > 0 || result.Sent > 0 {
 		_ = SetHostedKV(s.Store.DB, "last_successful_gmail_poll", time.Now().UTC().Format(time.RFC3339))

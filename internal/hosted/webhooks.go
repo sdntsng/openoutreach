@@ -86,6 +86,23 @@ func (s *Server) handleWebhookIngest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "campaign_not_found", "campaign_id not found")
 		return
 	}
+
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idem == "" {
+		idem = strings.TrimSpace(r.Header.Get("X-Idempotency-Key"))
+	}
+	if idem != "" {
+		_, ierr := exec(s.Store.DB, `
+			INSERT INTO webhook_idempotency (workspace_id, provider, idempotency_key)
+			VALUES (?, ?, ?)`, ws, provider, idem)
+		if ierr != nil {
+			writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+				"duplicate": true, "idempotency_key": idem, "campaign_id": campaignID,
+			}, Warnings: []string{"idempotent replay; leads not re-imported"}})
+			return
+		}
+	}
+
 	res, err := internal.AddLeadsToCampaign(s.Store.DB, campaignName, "", csvData)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "import_failed", err.Error())

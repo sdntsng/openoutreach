@@ -20,6 +20,9 @@ export default function CampaignDetailPage() {
   const [preview, setPreview] = useState<unknown>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [apolloQ, setApolloQ] = useState("");
+  const [apolloRows, setApolloRows] = useState<Record<string, string>[]>([]);
+  const [sheetURL, setSheetURL] = useState("");
 
   async function reload() {
     const c = await api.getCampaign(id);
@@ -140,6 +143,72 @@ export default function CampaignDetailPage() {
           <p>
             <strong>Send window:</strong> {str(campaign.send_window)} ({str(campaign.timezone)})
           </p>
+          <div className="form-grid" style={{ marginTop: "1.25rem" }}>
+            <h3 style={{ margin: 0 }}>Import leads (draft-safe)</h3>
+            <label>
+              Apollo search
+              <input
+                value={apolloQ}
+                onChange={(e) => setApolloQ(e.target.value)}
+                placeholder="keywords, title, company…"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={busy || !apolloQ.trim()}
+              onClick={() => {
+                setBusy(true);
+                setError(null);
+                api
+                  .apolloSearch({ q_keywords: apolloQ.trim(), per_page: 10 })
+                  .then((res) => setApolloRows(res.leads || []))
+                  .catch((err: Error) => setError(err.message))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              Search Apollo
+            </button>
+            {apolloRows.length > 0 && (
+              <>
+                <p className="muted">{apolloRows.length} preview rows (not imported yet)</p>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    const csv = [
+                      "email,first_name,last_name,company,domain,title,linkedin_url",
+                      ...apolloRows.map((r) =>
+                        [r.email, r.first_name, r.last_name, r.company, r.domain, r.title, r.linkedin_url]
+                          .map((v) => `"${String(v || "").replaceAll('"', '""')}"`)
+                          .join(","),
+                      ),
+                    ].join("\n");
+                    void run(() => api.addLeads(id, csv));
+                  }}
+                >
+                  Import Apollo preview
+                </button>
+              </>
+            )}
+            <label>
+              Google Sheet or CSV URL
+              <input
+                value={sheetURL}
+                onChange={(e) => setSheetURL(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/d/…"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={busy || !sheetURL.trim()}
+              onClick={() => {
+                const cid = Number(campaign.id);
+                void run(() => api.sheetsImport({ url: sheetURL.trim(), campaign_id: cid }));
+              }}
+            >
+              Import from Sheet
+            </button>
+          </div>
           {stats && (
             <div className="metrics" style={{ marginTop: "1rem" }}>
               <div className="metric">

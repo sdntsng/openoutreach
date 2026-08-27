@@ -48,3 +48,11 @@ CREATE TABLE IF NOT EXISTS webhook_endpoints (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(workspace_id, provider, name)
 );
+
+CREATE TABLE IF NOT EXISTS webhook_idempotency (
+  workspace_id TEXT NOT NULL DEFAULT 'default',
+  provider TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (workspace_id, provider, idempotency_key)
+);

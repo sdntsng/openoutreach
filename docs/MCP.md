@@ -40,8 +40,10 @@ Replace `YOUR_WORKER.workers.dev` with your Worker hostname. Never commit the be
 | outreach_list_integrations | Masked workspace API keys |
 | outreach_test_integration | Live/local credential probe |
 | outreach_apollo_search | Preview Apollo people → CSV; does not activate |
+| outreach_search_leads | Workspace search, or `provider=apollo` connector preview |
+| outreach_enrich_lead | Email enrich preview (local + connector) |
 | outreach_sheets_import | Public Sheets/CSV URL → preview or append; does not activate |
-| outreach_import_leads | Append CSV to campaign (draft-safe) |
+| outreach_import_leads | Append CSV; `dry_run` preview; active campaign needs `confirm` |
 | outreach_draft_sequence | ICP/offer → YAML draft only |
 | outreach_preflight_campaign | Non-mutating readiness checks |
 | outreach_suggest_reply | Classification-based suggestion; send still needs confirm |

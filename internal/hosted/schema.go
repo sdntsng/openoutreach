@@ -123,6 +123,13 @@ var hostedSchemaSQLite = []string{
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(workspace_id, provider, name)
 	)`,
+	`CREATE TABLE IF NOT EXISTS webhook_idempotency (
+		workspace_id TEXT NOT NULL DEFAULT 'default',
+		provider TEXT NOT NULL,
+		idempotency_key TEXT NOT NULL,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (workspace_id, provider, idempotency_key)
+	)`,
 }
 
 var hostedSchemaPostgres = []string{
@@ -220,5 +227,12 @@ var hostedSchemaPostgres = []string{
 		status TEXT NOT NULL DEFAULT 'active',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		UNIQUE(workspace_id, provider, name)
+	)`,
+	`CREATE TABLE IF NOT EXISTS webhook_idempotency (
+		workspace_id TEXT NOT NULL DEFAULT 'default',
+		provider TEXT NOT NULL,
+		idempotency_key TEXT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (workspace_id, provider, idempotency_key)
 	)`,
 }

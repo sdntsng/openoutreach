@@ -275,6 +275,12 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  apolloSearch: (body: { q_keywords?: string; credential_name?: string; per_page?: number }) =>
+    request<{ leads?: Record<string, string>[]; count?: number; csv?: string }>(
+      "/integrations/apollo/search",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
   sheetsImport: (body: { url: string; campaign_id?: number }) =>
     request<{ preview?: boolean; count?: number; csv?: string; imported?: unknown }>(
       "/integrations/sheets/import",

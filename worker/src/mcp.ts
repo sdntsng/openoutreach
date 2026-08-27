@@ -346,21 +346,52 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: "outreach_search_leads",
-    description: "Search leads by email, name, company, or domain.",
+    description:
+      "Search workspace leads, or connector-backed people search when provider is set (apollo). Connector search is preview-only.",
     inputSchema: {
       type: "object",
       properties: {
         q: { type: "string" },
+        query: { type: "string" },
         limit: { type: "number" },
+        provider: { type: "string" },
+        credential_name: { type: "string" },
       },
-      required: ["q"],
       additionalProperties: false,
     },
     call: (a) => {
-      const params = new URLSearchParams({ q: String(a.q) });
+      const q = String(a.q ?? a.query ?? "");
+      if (a.provider) {
+        return {
+          method: "POST",
+          path: "/api/v1/integrations/search",
+          body: {
+            provider: a.provider,
+            q,
+            limit: a.limit,
+            credential_name: a.credential_name,
+          },
+        };
+      }
+      const params = new URLSearchParams({ q });
       if (a.limit != null) params.set("limit", String(a.limit));
       return { method: "GET", path: `/api/v1/leads?${params}` };
     },
+  },
+  {
+    name: "outreach_enrich_lead",
+    description: "Enrich a lead by email via stored connector credentials (preview only).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        email: { type: "string" },
+        provider: { type: "string" },
+        credential_name: { type: "string" },
+      },
+      required: ["email"],
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/integrations/enrich", body: a }),
   },
   {
     name: "outreach_blacklist_lead",
@@ -455,6 +486,8 @@ const TOOLS: ToolDef[] = [
       properties: {
         campaign_id: { type: "string" },
         csv: { type: "string" },
+        dry_run: { type: "boolean" },
+        confirm: { type: "boolean" },
       },
       required: ["campaign_id", "csv"],
       additionalProperties: false,
@@ -462,7 +495,7 @@ const TOOLS: ToolDef[] = [
     call: (a) => ({
       method: "POST",
       path: `/api/v1/campaigns/${enc(a.campaign_id)}/leads`,
-      body: { csv: a.csv },
+      body: { csv: a.csv, dry_run: a.dry_run === true, confirm: a.confirm === true },
     }),
   },
   {

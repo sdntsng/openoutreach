@@ -67,6 +67,50 @@ func (s *Server) handleSheetsImport(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
+// SyncScheduledSheets imports CSV from workspace sheets credentials whose metadata
+// includes {"url":"...","campaign_id":N}. Invoked from hosted tick (Worker cron).
+func (s *Server) SyncScheduledSheets() {
+	caps := BuildCapabilities(s.WorkspaceID, s.PublicBaseURL, s.encKey() != nil, s.OAuth != nil)
+	if !caps.Integrations["sheets"] {
+		return
+	}
+	key := s.encKey()
+	if key == nil {
+		return
+	}
+	list, err := ListIntegrationCredentials(s.Store.DB, key, s.WorkspaceID)
+	if err != nil {
+		return
+	}
+	for _, cred := range list {
+		if cred.Provider != "sheets" || cred.Status != "active" {
+			continue
+		}
+		var meta struct {
+			URL        string `json:"url"`
+			CampaignID int64  `json:"campaign_id"`
+		}
+		_ = json.Unmarshal([]byte(cred.Metadata), &meta)
+		if strings.TrimSpace(meta.URL) == "" || meta.CampaignID == 0 {
+			continue
+		}
+		csvURL, err := normalizeSheetsCSVURL(strings.TrimSpace(meta.URL))
+		if err != nil {
+			continue
+		}
+		csvData, err := fetchCSVURL(csvURL)
+		if err != nil {
+			continue
+		}
+		var campaignName string
+		if err := queryRow(s.Store.DB, `SELECT name FROM campaigns WHERE id = ?`, meta.CampaignID).Scan(&campaignName); err != nil {
+			continue
+		}
+		_, _ = internal.AddLeadsToCampaign(s.Store.DB, campaignName, "", csvData)
+		_ = LogEnrichmentCall(s.Store.DB, s.WorkspaceID, "sheets", "cron_sync", fmt.Sprintf("campaign=%d", meta.CampaignID), 1)
+	}
+}
+
 func normalizeSheetsCSVURL(raw string) (string, error) {
 	if raw == "" {
 		return "", fmt.Errorf("url is required")

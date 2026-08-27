@@ -513,11 +513,34 @@ func (s *Server) handleAddLeads(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := io.ReadAll(r.Body)
 	var req struct {
-		CSV string `json:"csv"`
+		CSV     string `json:"csv"`
+		DryRun  bool   `json:"dry_run"`
+		Confirm bool   `json:"confirm"`
 	}
 	_ = json.Unmarshal(body, &req)
 	if req.CSV == "" {
 		req.CSV = string(body)
+	}
+	if req.DryRun {
+		records, _, err := internal.ParseLeadsCSVFromReader(strings.NewReader(req.CSV))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "parse_failed", err.Error())
+			return
+		}
+		n := len(records)
+		if n > 5 {
+			n = 5
+		}
+		writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+			"dry_run": true, "count": len(records), "sample": records[:n],
+		}})
+		return
+	}
+	var status string
+	_ = queryRow(s.Store.DB, `SELECT status FROM campaigns WHERE name = ?`, name).Scan(&status)
+	if status == "active" && !req.Confirm {
+		writeErr(w, http.StatusBadRequest, "confirm_required", "importing into an active campaign requires confirm=true")
+		return
 	}
 	res, err := internal.AddLeadsToCampaign(s.Store.DB, name, "", req.CSV)
 	if err != nil {

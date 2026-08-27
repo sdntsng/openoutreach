@@ -142,6 +142,25 @@ Implement [#7](https://github.com/sdntsng/openoutreach/issues/7):
 
 Accounts page stays the place to **connect mailboxes**; Settings owns **API keys and feature indicators**.
 
+### Webhook ingest (Clay / generic)
+
+`POST /api/v1/integrations/{clay|generic}/ingest?name=default&campaign_id=123`
+
+Cloudflare Access bypasses this path. Optional HMAC: `X-OpenOutreach-Signature` or `X-Clay-Signature` = hex HMAC-SHA256 of the raw body using the stored webhook secret. Optional `Idempotency-Key` prevents duplicate imports on retries.
+
+```http
+POST /api/v1/integrations/clay/ingest?campaign_id=42
+Content-Type: application/json
+X-OpenOutreach-Signature: <hex hmac-sha256>
+Idempotency-Key: clay-row-abc123
+
+{"email":"ada@acme.com","first_name":"Ada","company":"Acme"}
+```
+
+Without `campaign_id` the payload is preview-only (does not activate). Clay HTTP columns can POST the same JSON.
+
+Scheduled Google Sheets: store a `sheets` credential whose metadata is `{"url":"<sheet or csv url>","campaign_id":123}`. Hosted tick (Worker cron `*/2`) re-imports; existing campaign emails are skipped.
+
 ---
 
 ## 5. Implementation phases
