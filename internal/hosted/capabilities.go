@@ -92,14 +92,15 @@ func BuildCapabilities(workspaceID, publicBaseURL string, encryptionReady, googl
 		c.MCPEndpoint = base + "/mcp"
 	}
 	c.FeatureFlags = map[string]string{
-		"FEATURE_GMAIL":      boolStr(gmailOn),
-		"FEATURE_SMTP_IMAP":  boolStr(smtpOn),
-		"FEATURE_MICROSOFT":  boolStr(msOn),
-		"FEATURE_APOLLO":     boolStr(apolloOn),
-		"FEATURE_CLAY":       boolStr(clayOn),
-		"FEATURE_WEBHOOK":    boolStr(webhookOn),
-		"FEATURE_RESEND":     boolStr(resendOn),
-		"FEATURE_SES":        boolStr(sesOn),
+		"FEATURE_GMAIL":     boolStr(gmailOn),
+		"FEATURE_SMTP_IMAP": boolStr(smtpOn),
+		"FEATURE_MICROSOFT": boolStr(msOn),
+		"FEATURE_APOLLO":    boolStr(apolloOn),
+		"FEATURE_CLAY":      boolStr(clayOn),
+		"FEATURE_WEBHOOK":   boolStr(webhookOn),
+		"FEATURE_SHEETS":    boolStr(sheetsOn),
+		"FEATURE_RESEND":    boolStr(resendOn),
+		"FEATURE_SES":       boolStr(sesOn),
 	}
 	return c
 }

@@ -13,6 +13,21 @@ export default function SettingsPage() {
   const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const integrationChoices = (
+    [
+      ["apollo", "apollo"],
+      ["clay", "clay"],
+      ["webhook", "webhook"],
+      ["sheets", "sheets"],
+      ["hunter", "hunter"],
+      ["secret", "secret"],
+    ] as const
+  ).filter(([key]) => {
+    if (!caps?.integrations) return true;
+    if (!(key in caps.integrations)) return true;
+    return Boolean(caps.integrations[key]);
+  });
+
   async function reload() {
     const [w, c] = await Promise.all([api.workspace(), api.capabilities()]);
     setWorkspaceId(w.workspace_id || "default");
@@ -31,6 +46,13 @@ export default function SettingsPage() {
       setError(err.message);
     });
   }, []);
+
+  useEffect(() => {
+    if (integrationChoices.length === 0) return;
+    if (!integrationChoices.some(([key]) => key === provider)) {
+      setProvider(integrationChoices[0][0]);
+    }
+  }, [caps, provider]);
 
   async function onSave(e: FormEvent) {
     e.preventDefault();
@@ -117,13 +139,11 @@ export default function SettingsPage() {
           <label>
             Provider
             <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-              <option value="apollo">apollo</option>
-              <option value="clay">clay</option>
-              <option value="webhook">webhook</option>
-              <option value="sheets">sheets</option>
-              <option value="resend">resend</option>
-              <option value="hunter">hunter</option>
-              <option value="secret">secret</option>
+              {integrationChoices.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
             </select>
           </label>
           <label>

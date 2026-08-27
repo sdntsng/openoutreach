@@ -30,6 +30,18 @@ export interface Env {
   AUTH_MODE?: string;
   POLICY_AUD?: string;
   TEAM_DOMAIN?: string;
+  MICROSOFT_CLIENT_ID?: string;
+  MICROSOFT_CLIENT_SECRET?: string;
+  MICROSOFT_TENANT_ID?: string;
+  FEATURE_GMAIL?: string;
+  FEATURE_MICROSOFT?: string;
+  FEATURE_SMTP_IMAP?: string;
+  FEATURE_APOLLO?: string;
+  FEATURE_CLAY?: string;
+  FEATURE_WEBHOOK?: string;
+  FEATURE_SHEETS?: string;
+  FEATURE_RESEND?: string;
+  FEATURE_SES?: string;
 }
 
 export class OutreachContainer extends Container<Env> {
@@ -63,6 +75,20 @@ export class OutreachContainer extends Container<Env> {
       ["TRACKING_HMAC_SECRET", "TRACKING_HMAC_SECRET"],
       ["GOOGLE_REDIRECT_URL", "GOOGLE_REDIRECT_URL"],
       ["OPENOUTREACH_WORKSPACE_ID", "OPENOUTREACH_WORKSPACE_ID"],
+      ["AUTH_MODE", "AUTH_MODE"],
+      ["MCP_BEARER_TOKEN", "MCP_BEARER_TOKEN"],
+      ["MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_ID"],
+      ["MICROSOFT_CLIENT_SECRET", "MICROSOFT_CLIENT_SECRET"],
+      ["MICROSOFT_TENANT_ID", "MICROSOFT_TENANT_ID"],
+      ["FEATURE_GMAIL", "FEATURE_GMAIL"],
+      ["FEATURE_MICROSOFT", "FEATURE_MICROSOFT"],
+      ["FEATURE_SMTP_IMAP", "FEATURE_SMTP_IMAP"],
+      ["FEATURE_APOLLO", "FEATURE_APOLLO"],
+      ["FEATURE_CLAY", "FEATURE_CLAY"],
+      ["FEATURE_WEBHOOK", "FEATURE_WEBHOOK"],
+      ["FEATURE_SHEETS", "FEATURE_SHEETS"],
+      ["FEATURE_RESEND", "FEATURE_RESEND"],
+      ["FEATURE_SES", "FEATURE_SES"],
     ];
     for (const [from, to] of map) {
       const v = e[from];

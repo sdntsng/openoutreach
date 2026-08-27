@@ -25,6 +25,12 @@
       "GOOGLE_CLIENT_SECRET": {
         "description": "Google OAuth client secret."
       },
+      "MICROSOFT_CLIENT_ID": {
+        "description": "Optional. Microsoft Entra app ID for Outlook/Microsoft 365 send + read."
+      },
+      "MICROSOFT_CLIENT_SECRET": {
+        "description": "Optional. Microsoft Entra client secret."
+      },
       "CREDENTIAL_ENCRYPTION_KEY": {
         "description": "Generate: `openssl rand -hex 32`. **Do not rotate** after connecting Gmail accounts."
       },
