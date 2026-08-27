@@ -389,6 +389,129 @@ const TOOLS: ToolDef[] = [
       };
     },
   },
+  {
+    name: "outreach_list_capabilities",
+    description: "List operator-enabled send/integration features for this instance (no secrets).",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    call: () => ({ method: "GET", path: "/api/v1/settings/capabilities" }),
+  },
+  {
+    name: "outreach_list_integrations",
+    description: "List workspace integration credentials (masked). Never returns full secrets.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    call: () => ({ method: "GET", path: "/api/v1/integrations" }),
+  },
+  {
+    name: "outreach_test_integration",
+    description: "Test an integration credential by id without returning the secret.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "number" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/integrations/${enc(a.id)}/test`,
+      body: {},
+    }),
+  },
+  {
+    name: "outreach_apollo_search",
+    description:
+      "Search Apollo people using a stored apollo credential (preview only). Import via outreach_add_leads; never auto-activates.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        credential_name: { type: "string" },
+        q_keywords: { type: "string" },
+        person_titles: { type: "array", items: { type: "string" } },
+        per_page: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/integrations/apollo/search", body: a }),
+  },
+  {
+    name: "outreach_sheets_import",
+    description:
+      "Import leads from a public Google Sheets (or CSV) URL. Preview without campaign_id; append with campaign_id. Does not activate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        campaign_id: { type: "number" },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/integrations/sheets/import", body: a }),
+  },
+  {
+    name: "outreach_import_leads",
+    description: "Import CSV leads into a draft campaign. Does not activate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string" },
+        csv: { type: "string" },
+      },
+      required: ["campaign_id", "csv"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/campaigns/${enc(a.campaign_id)}/leads`,
+      body: { csv: a.csv },
+    }),
+  },
+  {
+    name: "outreach_draft_sequence",
+    description: "Draft sequence YAML from ICP/offer. Draft only — never activates.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        icp: { type: "string" },
+        offer: { type: "string" },
+        tone: { type: "string" },
+        step_count: { type: "number" },
+        from_name: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/agent/draft-sequence", body: a }),
+  },
+  {
+    name: "outreach_preflight_campaign",
+    description: "Non-mutating deliverability/readiness checks before activate.",
+    inputSchema: {
+      type: "object",
+      properties: { campaign_id: { type: "string" } },
+      required: ["campaign_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "GET",
+      path: `/api/v1/campaigns/${enc(a.campaign_id)}/preflight`,
+    }),
+  },
+  {
+    name: "outreach_suggest_reply",
+    description: "Suggest a reply body from classification. Sending still requires confirm on reply tool.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string" },
+        lead_id: { type: "string" },
+      },
+      required: ["campaign_id", "lead_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "GET",
+      path: `/api/v1/threads/${enc(a.campaign_id)}/${enc(a.lead_id)}/suggest-reply`,
+    }),
+  },
 ];
 
 function enc(v: unknown): string {

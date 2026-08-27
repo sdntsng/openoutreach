@@ -316,11 +316,12 @@ func FetchGoogleUserEmail(ctx context.Context, client *http.Client) (string, str
 	return info.Email, info.ID, nil
 }
 
-// RoutingGWS prefers GoogleAPIProvider when a mapping exists, else falls back to CLI gws.
+// RoutingGWS prefers GoogleAPIProvider when a mapping exists, else Microsoft Graph, else CLI gws.
 type RoutingGWS struct {
-	API  *GoogleAPIProvider
-	CLI  internal.GWSClient
-	Mock *MockGmail
+	API       *GoogleAPIProvider
+	Microsoft *MicrosoftGraphProvider
+	CLI       internal.GWSClient
+	Mock      *MockGmail
 }
 
 func (r *RoutingGWS) SendEmail(account, to, rawMsg, threadID string) (string, string, error) {
@@ -330,6 +331,14 @@ func (r *RoutingGWS) SendEmail(account, to, rawMsg, threadID string) (string, st
 	if r.API != nil {
 		if _, ok := r.API.accountEmailToID[strings.ToLower(account)]; ok {
 			return r.API.SendEmail(account, to, rawMsg, threadID)
+		}
+	}
+	if r.Microsoft != nil {
+		r.Microsoft.mu.Lock()
+		_, ok := r.Microsoft.emails[strings.ToLower(account)]
+		r.Microsoft.mu.Unlock()
+		if ok {
+			return r.Microsoft.SendEmail(account, to, rawMsg, threadID)
 		}
 	}
 	if r.CLI != nil {
@@ -347,6 +356,14 @@ func (r *RoutingGWS) ListMessages(account, query string, includeSpamTrash ...boo
 			return r.API.ListMessages(account, query, includeSpamTrash...)
 		}
 	}
+	if r.Microsoft != nil {
+		r.Microsoft.mu.Lock()
+		_, ok := r.Microsoft.emails[strings.ToLower(account)]
+		r.Microsoft.mu.Unlock()
+		if ok {
+			return r.Microsoft.ListMessages(account, query, includeSpamTrash...)
+		}
+	}
 	if r.CLI != nil {
 		return r.CLI.ListMessages(account, query, includeSpamTrash...)
 	}
@@ -362,6 +379,14 @@ func (r *RoutingGWS) GetMessage(account, msgID string) (*internal.GWSMessage, er
 			return r.API.GetMessage(account, msgID)
 		}
 	}
+	if r.Microsoft != nil {
+		r.Microsoft.mu.Lock()
+		_, ok := r.Microsoft.emails[strings.ToLower(account)]
+		r.Microsoft.mu.Unlock()
+		if ok {
+			return r.Microsoft.GetMessage(account, msgID)
+		}
+	}
 	if r.CLI != nil {
 		return r.CLI.GetMessage(account, msgID)
 	}
@@ -375,6 +400,14 @@ func (r *RoutingGWS) GetThreadMessages(account, threadID string) ([]internal.GWS
 	if r.API != nil {
 		if _, ok := r.API.accountEmailToID[strings.ToLower(account)]; ok {
 			return r.API.GetThreadMessages(account, threadID)
+		}
+	}
+	if r.Microsoft != nil {
+		r.Microsoft.mu.Lock()
+		_, ok := r.Microsoft.emails[strings.ToLower(account)]
+		r.Microsoft.mu.Unlock()
+		if ok {
+			return r.Microsoft.GetThreadMessages(account, threadID)
 		}
 	}
 	if r.CLI != nil {

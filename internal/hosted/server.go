@@ -100,6 +100,14 @@ func NewServer(store *engine.Store, opts ServerOpts) (*Server, error) {
 		_ = s.hydrateAPIAccounts(api)
 		routing.API = api
 	}
+	if storeCreds, ok := s.Creds.(*DBCredentialStore); ok && storeCreds != nil {
+		msCfg := MicrosoftOAuthConfig(s.PublicBaseURL + "/api/v1/accounts/microsoft/oauth/callback")
+		if msCfg.ClientID != "" && msCfg.ClientSecret != "" {
+			ms := NewMicrosoftGraphProvider(storeCreds, msCfg)
+			_ = s.hydrateMicrosoftAccounts(ms)
+			routing.Microsoft = ms
+		}
+	}
 	if !s.UseMockGmail {
 		routing.CLI = engine.ConfiguredGWSClient(store.DB)
 	}
@@ -131,6 +139,33 @@ func (s *Server) hydrateAPIAccounts(api *GoogleAPIProvider) error {
 	return nil
 }
 
+func (s *Server) hydrateMicrosoftAccounts(api *MicrosoftGraphProvider) error {
+	rows, err := query(s.Store.DB, `SELECT id, email FROM accounts WHERE status = 'active' AND provider = ?`, AccountProviderMicrosoft)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	store, ok := s.Creds.(*DBCredentialStore)
+	if !ok || store == nil {
+		return nil
+	}
+	for rows.Next() {
+		var id int64
+		var email string
+		if err := rows.Scan(&id, &email); err != nil {
+			return err
+		}
+		cred, err := store.GetMicrosoftCredentialByAccountID(id)
+		if err != nil {
+			return err
+		}
+		if cred != nil {
+			api.RegisterAccount(email, id)
+		}
+	}
+	return nil
+}
+
 func (s *Server) Handler() http.Handler { return s.Mux }
 
 func (s *Server) routes() {
@@ -141,9 +176,26 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("GET /api/v1/accounts/{id}/status", s.handleAccountStatus)
 	s.Mux.HandleFunc("POST /api/v1/accounts/google/oauth/start", s.handleOAuthStart)
 	s.Mux.HandleFunc("GET /api/v1/accounts/google/oauth/callback", s.handleOAuthCallback)
+	s.Mux.HandleFunc("POST /api/v1/accounts/microsoft/oauth/start", s.handleMicrosoftOAuthStart)
+	s.Mux.HandleFunc("GET /api/v1/accounts/microsoft/oauth/callback", s.handleMicrosoftOAuthCallback)
+	s.Mux.HandleFunc("POST /api/v1/accounts/smtp", s.handleAddSMTPAccount)
 	s.Mux.HandleFunc("POST /api/v1/accounts/{id}/pause", s.handlePauseAccount)
 	s.Mux.HandleFunc("POST /api/v1/accounts/{id}/resume", s.handleResumeAccount)
 	s.Mux.HandleFunc("POST /api/v1/accounts/{id}/remove", s.handleRemoveAccount)
+
+	s.Mux.HandleFunc("GET /api/v1/settings/capabilities", s.handleCapabilities)
+	s.Mux.HandleFunc("GET /api/v1/integrations", s.handleListIntegrations)
+	s.Mux.HandleFunc("POST /api/v1/integrations", s.handlePutIntegration)
+	s.Mux.HandleFunc("DELETE /api/v1/integrations/{id}", s.handleDeleteIntegration)
+	s.Mux.HandleFunc("POST /api/v1/integrations/test", s.handleTestIntegration)
+	s.Mux.HandleFunc("POST /api/v1/integrations/{id}/test", s.handleTestIntegration)
+	s.Mux.HandleFunc("POST /api/v1/integrations/apollo/search", s.handleApolloSearch)
+	s.Mux.HandleFunc("POST /api/v1/integrations/sheets/import", s.handleSheetsImport)
+	s.Mux.HandleFunc("POST /api/v1/integrations/webhooks", s.handlePutWebhookEndpoint)
+	s.Mux.HandleFunc("POST /api/v1/integrations/{provider}/ingest", s.handleWebhookIngest)
+
+	s.Mux.HandleFunc("POST /api/v1/agent/draft-sequence", s.handleDraftSequence)
+	s.Mux.HandleFunc("GET /api/v1/campaigns/{id}/preflight", s.handlePreflightCampaign)
 
 	s.Mux.HandleFunc("GET /api/v1/campaigns", s.handleListCampaigns)
 	s.Mux.HandleFunc("POST /api/v1/campaigns", s.handleCreateCampaign)
@@ -160,6 +212,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("GET /api/v1/threads/{campaignId}/{leadId}", s.handleGetThread)
 	s.Mux.HandleFunc("POST /api/v1/threads/{campaignId}/{leadId}/reply", s.handleThreadReply)
 	s.Mux.HandleFunc("POST /api/v1/threads/{campaignId}/{leadId}/classify", s.handleClassify)
+	s.Mux.HandleFunc("GET /api/v1/threads/{campaignId}/{leadId}/suggest-reply", s.handleSuggestReply)
 
 	s.Mux.HandleFunc("POST /api/v1/leads/validate", s.handleValidateLeads)
 	s.Mux.HandleFunc("GET /api/v1/leads", s.handleListLeads)
@@ -221,6 +274,7 @@ func (s *Server) handleTick(w http.ResponseWriter, r *http.Request) {
 		NoSleep:         true,
 		MaxSendsPerTick: 1,
 		Timezone:        time.UTC,
+		SecretResolver:  s.secretResolver(),
 		TrackingPixelForSend: func(campaignID, leadID, accountID, sendID int64, stepNumber int, params *internal.EmailParams) {
 			s.attachTrackingPixel(campaignID, leadID, accountID, sendID, params)
 		},

@@ -242,7 +242,68 @@ export const api = {
 
   workspace: () =>
     request<{ workspace_id: string }>("/workspace"),
+
+  capabilities: () => request<Capabilities>("/settings/capabilities"),
+
+  listIntegrations: () =>
+    request<{ integrations: IntegrationCredential[] }>("/integrations"),
+
+  putIntegration: (body: { provider: string; name: string; secret: string; metadata?: string }) =>
+    request<IntegrationCredential>("/integrations", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  deleteIntegration: (id: string | number) =>
+    request<{ deleted: boolean }>(`/integrations/${id}`, { method: "DELETE" }),
+
+  testIntegration: (id: string | number) =>
+    request<{ ok: boolean; provider?: string; detail?: string }>(`/integrations/${id}/test`, {
+      method: "POST",
+      body: "{}",
+    }),
+
+  startMicrosoftOAuth: () =>
+    request<{ authorize_url?: string }>("/accounts/microsoft/oauth/start", {
+      method: "POST",
+      body: "{}",
+    }),
+
+  addSMTPAccount: (body: Record<string, unknown>) =>
+    request<Account>("/accounts/smtp", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  sheetsImport: (body: { url: string; campaign_id?: number }) =>
+    request<{ preview?: boolean; count?: number; csv?: string; imported?: unknown }>(
+      "/integrations/sheets/import",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
 };
+
+export interface Capabilities {
+  workspace_id?: string;
+  auth_mode?: string;
+  mcp_configured?: boolean;
+  mcp_endpoint?: string;
+  public_base_url?: string;
+  sending?: Record<string, boolean>;
+  integrations?: Record<string, boolean>;
+  encryption_ready?: boolean;
+  google_oauth_ready?: boolean;
+  microsoft_oauth_ready?: boolean;
+}
+
+export interface IntegrationCredential {
+  id: number;
+  workspace_id?: string;
+  provider: string;
+  name: string;
+  status?: string;
+  secret_hint?: string;
+  has_secret?: boolean;
+}
 
 export function asArray<T>(data: { [k: string]: T[] } | T[], key: string): T[] {
   if (Array.isArray(data)) return data;

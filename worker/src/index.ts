@@ -146,6 +146,8 @@ function isPublicPath(pathname: string, mode: AuthMode): boolean {
   if (pathname.startsWith("/t/")) return true;
   if (pathname === "/oauth/google/callback" || pathname.startsWith("/oauth/google/")) return true;
   if (pathname.startsWith("/api/v1/accounts/google/oauth/callback")) return true;
+  if (pathname.startsWith("/api/v1/accounts/microsoft/oauth/callback")) return true;
+  if (pathname.match(/^\/api\/v1\/integrations\/[^/]+\/ingest$/)) return true;
   if (pathname === "/api/auth/whoami") return true;
   if (mode === "hosted") {
     return pathname.startsWith("/api/auth") || pathname === "/sign-in" || pathname === "/sign-up";

@@ -30,7 +30,7 @@ pkg/engine/         public facade for hosted/API
 worker/             Cloudflare Worker: proxy, cron, /t/*, MCP
 web/                Vite + React ops dashboard
 migrations/         additive hosted SQL
-docs/               UPSTREAM, ARCHITECTURE, DEPLOYMENT, OAUTH, MCP, SECURITY, RELEASING
+docs/               UPSTREAM, ARCHITECTURE, DEPLOYMENT, OAUTH, MCP, SECURITY, RELEASING, INTEGRATIONS
 ```
 
 ## Upstream hooks (keep diffs small)

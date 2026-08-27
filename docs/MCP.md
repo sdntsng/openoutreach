@@ -1,8 +1,25 @@
 # MCP
 
-Endpoint: `POST /mcp` (Worker).
+Endpoint: `POST /mcp` on the Worker URL (same origin as the dashboard host).
 
-Auth: `Authorization: Bearer $MCP_BEARER_TOKEN` when configured.
+Auth: `Authorization: Bearer $MCP_BEARER_TOKEN` when configured. Bearer bypasses Cloudflare Access on `/mcp` only.
+
+## Cursor MCP config (hosted Worker)
+
+```json
+{
+  "mcpServers": {
+    "openoutreach": {
+      "url": "https://YOUR_WORKER.workers.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:MCP_BEARER_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+Replace `YOUR_WORKER.workers.dev` with your Worker hostname. Never commit the bearer token.
 
 ## Tools
 
@@ -13,19 +30,46 @@ Auth: `Authorization: Bearer $MCP_BEARER_TOKEN` when configured.
 | outreach_create_campaign | **draft only — does not send** |
 | outreach_update_campaign | |
 | outreach_preview_campaign | |
-| outreach_activate_campaign | **consequential — explicit human approval** |
+| outreach_activate_campaign | **consequential — requires `confirm: true`** |
 | outreach_pause_campaign / resume | |
 | outreach_add_leads / remove_lead / validate_leads | |
 | outreach_get_campaign / list_campaigns / get_campaign_stats | |
 | outreach_list_replies / get_thread / reply_to_thread | |
 | outreach_search_leads / blacklist_lead | |
+| outreach_list_capabilities | Operator feature flags (no secrets) |
+| outreach_list_integrations | Masked workspace API keys |
+| outreach_test_integration | Live/local credential probe |
+| outreach_apollo_search | Preview Apollo people → CSV; does not activate |
+| outreach_sheets_import | Public Sheets/CSV URL → preview or append; does not activate |
+| outreach_import_leads | Append CSV to campaign (draft-safe) |
+| outreach_draft_sequence | ICP/offer → YAML draft only |
+| outreach_preflight_campaign | Non-mutating readiness checks |
+| outreach_suggest_reply | Classification-based suggestion; send still needs confirm |
 
-## Safety
+Parity rule: Settings / Accounts actions that agents need have an MCP twin. Tokens are never returned.
 
-Normal agent workflow:
+## Safety — no silent sends
+
+Policy: **create ≠ send**. Activation is never inferred from earlier tool calls.
+
+Normal agent loop:
 
 ```
-create → add leads → preview → human reviews → activate
+create draft → add leads → preview → human reviews → activate (confirm: true)
 ```
 
-Activation is never inferred from earlier tool calls. Responses include `status`, counts, `warnings`, and `next_actions`. Tokens are never returned.
+Recommended session:
+
+1. `outreach_list_capabilities` — see which providers the operator enabled
+2. `outreach_draft_sequence` — get YAML; create campaign via `outreach_create_campaign` (draft)
+3. `outreach_apollo_search` or `outreach_sheets_import` / `outreach_import_leads` — preview then import
+4. `outreach_preview_campaign` + `outreach_preflight_campaign`
+5. **Stop** until a human approves; only then `outreach_activate_campaign` with `confirm: true`
+
+Responses include `status`, counts, `warnings`, and `next_actions` where useful. Treat `warnings` as blocking signals for activate.
+
+## REST parity
+
+HTTP API under `/api/v1/*` uses the same engine. Envelope: `{ data, error, warnings }` (+ `next_actions` where useful). See [ARCHITECTURE.md](ARCHITECTURE.md) and [INTEGRATIONS.md](INTEGRATIONS.md).
+
+Mintlify publish target ([#21](https://github.com/sdntsng/openoutreach/issues/21)): this file is the canonical Agents (MCP) section until a Mintlify docs site is wired.

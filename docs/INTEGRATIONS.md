@@ -6,11 +6,11 @@ Product architecture and phased roadmap for lead sources, send providers, MCP de
 
 | Surface | Today |
 |---------|--------|
-| **Send** | Hosted: Gmail OAuth only (`GoogleAPIProvider` → `GWSClient`). Upstream CLI already has `smtp_imap`. |
-| **Leads** | CSV paste/upload only (`ParseLeadsCSV` → `AddLeadsToCampaign`). |
-| **Settings** | Read-only workspace ID in `web/src/pages/SettingsPage.tsx`. |
-| **MCP** | Exists: `POST /mcp` + 17 tools in `worker/src/mcp.ts` / `docs/MCP.md`. No connector/enrich tools yet. |
-| **Vault** | Google OAuth tokens only (`google_credentials`). No multi-provider API key table. |
+| **Send** | Gmail OAuth, hosted SMTP/IMAP, Microsoft Graph OAuth (when `MICROSOFT_CLIENT_*` set). Resend/SES stubs (SES via SMTP endpoint). |
+| **Leads** | CSV + Google Sheets CSV URL import + Apollo search preview + Clay/generic webhook ingest. |
+| **Settings** | Capabilities catalog, integration credentials vault (masked), MCP/auth indicators. |
+| **MCP** | Campaign tools + capabilities/integrations/Apollo/Sheets/draft/preflight/suggest-reply. |
+| **Vault** | `google_credentials`, `microsoft_credentials`, `integration_credentials` (AES via `CREDENTIAL_ENCRYPTION_KEY`). |
 
 **Default strategy (locked):** OpenOutreach is the **send + sequence engine**. Compete with Instantly/Smartlead; do **not** proxy send through them. Users bring Apollo/Clay/etc. for enrichment. Warmup is a later optional integration, not a v1 send path.
 
@@ -159,7 +159,7 @@ Webhook + Sheets ([#11](https://github.com/sdntsng/openoutreach/issues/11)), Cla
 Sequence draft, reply triage, preflight ([#13](https://github.com/sdntsng/openoutreach/issues/13)–[#15](https://github.com/sdntsng/openoutreach/issues/15)); Mintlify MCP docs ([#21](https://github.com/sdntsng/openoutreach/issues/21)).
 
 **Phase 4 — API mailers + warmup (deferred)**  
-[#5](https://github.com/sdntsng/openoutreach/issues/5); separate warmup issue — status badge only, no tick coupling.
+[#5](https://github.com/sdntsng/openoutreach/issues/5); Warmup network ([#25](https://github.com/sdntsng/openoutreach/issues/25)) — status badge only, **outside** `engine.Tick`.
 
 ---
 
@@ -167,7 +167,7 @@ Sequence draft, reply triage, preflight ([#13](https://github.com/sdntsng/openou
 
 1. This document (`docs/INTEGRATIONS.md`) — catalog + cost caveats + Instantly-is-competitor stance
 2. Capabilities + vault API + Settings UI sections
-3. Work through open issues in phase order; file one Warmup network issue under epic #2 non-goals
+3. Work through open issues in phase order; Warmup network filed as [#25](https://github.com/sdntsng/openoutreach/issues/25) under epic #2 non-goals
 
 ## Non-goals (near term)
 
