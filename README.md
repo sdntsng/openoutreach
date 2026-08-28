@@ -71,6 +71,7 @@ Full guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (Postgres options, secrets,
 | Doc | Purpose |
 |-----|---------|
 | [AGENTS.md](AGENTS.md) | Agent / contributor context graph |
+| [docs/PARITY.md](docs/PARITY.md) | Closed/open-source comparison + in-app gaps we closed |
 | [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) | Lead sources, send providers, Settings/MCP roadmap |
 | [docs/UPSTREAM.md](docs/UPSTREAM.md) | cold-cli fork baseline |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Hosted topology |

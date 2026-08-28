@@ -50,15 +50,19 @@ Do not configure a stdio `cold-cli` MCP as a send path. Create ≠ send still ap
 | outreach_add_cf_email_account | Vaulted API token; `FEATURE_CF_EMAIL` |
 | outreach_pause_account / resume | Tick will not send while paused |
 | outreach_get_account_status | |
+| outreach_setup | First-run counts + next actions |
 | outreach_create_campaign | **draft only — does not send** |
-| outreach_update_campaign | |
+| outreach_update_campaign | Draft/paused only; never activates |
+| outreach_clone_campaign | Always stays **draft** |
 | outreach_preview_campaign | |
 | outreach_activate_campaign | **consequential — requires `confirm: true`** |
 | outreach_pause_campaign / resume | |
 | outreach_add_leads / remove_lead / validate_leads | |
 | outreach_get_campaign / list_campaigns / get_campaign_stats | |
 | outreach_list_replies / get_thread / reply_to_thread | reply requires `confirm: true` + `confirm_to` |
-| outreach_search_leads / blacklist_lead | |
+| outreach_search_leads / blacklist_lead | `?q=` searches email/name/company |
+| outreach_list_suppressions / add_suppression | Global block list; honored on import |
+| outreach_verify_leads | Syntax + MX + disposable; no API key |
 | outreach_list_capabilities | Operator feature flags (no secrets) |
 | outreach_list_integrations | Masked workspace API keys |
 | outreach_put_integration | Create/rotate credential; secret never echoed |

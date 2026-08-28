@@ -7,9 +7,9 @@ Product architecture and phased roadmap for lead sources, send providers, MCP de
 | Surface | Today |
 |---------|--------|
 | **Send** | Gmail OAuth, hosted SMTP/IMAP, Microsoft Graph OAuth (when `MICROSOFT_CLIENT_*` set). Resend/SES stubs (SES via SMTP endpoint). |
-| **Leads** | CSV + Google Sheets CSV URL import + Apollo search preview + Clay/generic webhook ingest. |
-| **Settings** | Capabilities catalog, integration credentials vault (masked), MCP/auth indicators. |
-| **MCP** | Campaign tools + capabilities/integrations/Apollo/Sheets/draft/preflight/suggest-reply. |
+| **Leads** | CSV + Sheets + Apollo + Clay ingest + **suppressions** (honored on import) + **verify** (syntax/MX/disposable) + CSV export + `?q=` search. |
+| **Settings** | Capabilities catalog, vault, **outbound webhook URL**, MCP/auth indicators. First-run checklist on Overview (`GET /api/v1/setup`). |
+| **MCP** | Campaign tools + clone/PATCH + suppressions + setup + capabilities/integrations/Apollo/Sheets/draft/preflight/suggest-reply. |
 | **Vault** | `google_credentials`, `microsoft_credentials`, `integration_credentials` (AES via `CREDENTIAL_ENCRYPTION_KEY`). |
 
 **Default strategy (locked):** OpenOutreach is the **send + sequence engine**. Compete with Instantly/Smartlead; do **not** proxy send through them. Users bring Apollo/Clay/etc. for enrichment. Warmup is a later optional integration, not a v1 send path.
@@ -275,7 +275,7 @@ Small follow-ups that fit the existing engine. Do not revisit Instantly-as-send-
 | Campaign list sent / replies / **Approx. opens** | Shipped on this branch |
 | Account Pause / Resume | Shipped (API existed; dashboard + MCP twins) |
 | Helpful empty states | Shipped on Campaigns / Accounts / Leads |
-| DNS/SPF checklist on Accounts after CF Email connect | Next — read-only records from CF zone API |
+| DNS/SPF checklist on Accounts | Shipped — public MX / SPF / DMARC (no extra token) |
 | Inbox empty: point at Email Routing if only `cf_email` accounts exist | Next |
 
 ### One-click setup / deploy
@@ -288,7 +288,7 @@ Already shipped:
 
 Worth adding later, in this order:
 
-1. **`FEATURE_*` in `.env.deploy`** forwarded as Worker secrets + baked into `container-env.ts` (so flags survive first boot).
+1. **`FEATURE_*` kill-switches** — Resend / CF Email / Hunter / warmup now **default on**. Set `FEATURE_*=0` only to hide a form. Vault credentials are still the real switch.
 2. **Workers Builds on `dev`** (staging) — GitHub Action `workflow_dispatch` + `CLOUDFLARE_API_TOKEN`; do **not** auto-deploy `main` without an explicit production go-ahead.
 3. **Email Sending onboard checklist** in Settings: domain, SPF/DKIM, Routing rule → this Worker, `FEATURE_CF_EMAIL=1`. Still no `send_email` binding until the operator has onboarded Email Sending.
 4. **Access setup script** already exists (`scripts/setup-cf-access.sh`). Surface a Settings copy-paste of bypass paths (`/t/*`, `/internal/*`, OAuth callbacks, Clay ingest).
