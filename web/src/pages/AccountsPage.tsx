@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { api, asArray, type Account, type Capabilities } from "../api";
+import { api, asArray, type Account, type Capabilities, type DNSCheck } from "../api";
 
 export default function AccountsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -12,6 +12,7 @@ export default function AccountsPage() {
   const [showResend, setShowResend] = useState(false);
   const [showCF, setShowCF] = useState(false);
   const [resend, setResend] = useState({ email: "", api_key: "", daily_limit: "50" });
+  const [dns, setDns] = useState<Record<string, DNSCheck | string>>({});
   const [cfEmail, setCfEmail] = useState({
     email: "",
     api_token: "",
@@ -338,8 +339,8 @@ export default function AccountsPage() {
           {accounts.length === 0 ? (
             <tr>
               <td colSpan={8} className="muted">
-                No accounts connected. Connect Gmail or Microsoft, or add SMTP/IMAP. Cloudflare Email
-                appears when <code>FEATURE_CF_EMAIL=1</code>.
+                No accounts connected. Connect Gmail or Microsoft, or add SMTP/IMAP / Resend /
+                Cloudflare Email from the buttons above.
               </td>
             </tr>
           ) : (
@@ -361,12 +362,66 @@ export default function AccountsPage() {
                   >
                     {a.status === "paused" ? "Resume" : "Pause"}
                   </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() => {
+                      const key = String(a.id);
+                      setBusy(true);
+                      api
+                        .accountDNS(a.id)
+                        .then((res) => setDns((prev) => ({ ...prev, [key]: res })))
+                        .catch((err: Error) => setDns((prev) => ({ ...prev, [key]: err.message })))
+                        .finally(() => setBusy(false));
+                    }}
+                  >
+                    Check DNS
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    disabled={busy}
+                    onClick={() => {
+                      if (!window.confirm(`Remove ${a.email}? This does not send mail.`)) return;
+                      setBusy(true);
+                      api
+                        .removeAccount(a.id)
+                        .then(() => reloadAccounts())
+                        .catch((err: Error) => setError(err.message))
+                        .finally(() => setBusy(false));
+                    }}
+                  >
+                    Remove
+                  </button>
                 </td>
               </tr>
             ))
           )}
         </tbody>
       </table>
+      {Object.keys(dns).length > 0 && (
+        <div className="panel" style={{ marginTop: "1rem" }}>
+          <h3 style={{ marginTop: 0 }}>DNS (public MX / SPF / DMARC)</h3>
+          {accounts.map((a) => {
+            const row = dns[String(a.id)];
+            if (!row) return null;
+            if (typeof row === "string") {
+              return (
+                <p key={a.id} className="error">
+                  {a.email}: {row}
+                </p>
+              );
+            }
+            return (
+              <p key={a.id} className="muted">
+                <strong>{row.email}</strong> — MX {row.mx ? "ok" : "missing"}, SPF{" "}
+                {row.spf ? "ok" : "missing"}, DMARC {row.dmarc ? "ok" : "missing"}
+              </p>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

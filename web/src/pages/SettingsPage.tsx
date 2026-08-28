@@ -11,6 +11,7 @@ export default function SettingsPage() {
   const [provider, setProvider] = useState("apollo");
   const [name, setName] = useState("default");
   const [secret, setSecret] = useState("");
+  const [outboundURL, setOutboundURL] = useState("");
   const [busy, setBusy] = useState(false);
 
   const integrationChoices = (
@@ -18,6 +19,7 @@ export default function SettingsPage() {
       ["apollo", "apollo"],
       ["clay", "clay"],
       ["webhook", "webhook"],
+      ["outbound", "outbound"],
       ["sheets", "sheets"],
       ["hunter", "hunter"],
       ["warmup", "warmup"],
@@ -129,6 +131,45 @@ export default function SettingsPage() {
               </li>
             ))}
         </ul>
+      </div>
+
+      <h2>Outbound webhook</h2>
+      <div className="panel form-grid">
+        <p className="muted">
+          Paste a Slack / Make / HubSpot incoming URL. After each tick, new sent / reply / bounce
+          events are POSTed as JSON. Failures never block sending.
+        </p>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            setBusy(true);
+            setError(null);
+            setNote(null);
+            api
+              .putIntegration({ provider: "outbound", name: "default", secret: outboundURL })
+              .then(() => {
+                setOutboundURL("");
+                setNote("Outbound webhook saved.");
+                return reload();
+              })
+              .catch((err: Error) => setError(err.message))
+              .finally(() => setBusy(false));
+          }}
+          className="form-grid"
+        >
+          <label>
+            Webhook URL
+            <input
+              value={outboundURL}
+              onChange={(e) => setOutboundURL(e.target.value)}
+              placeholder="https://hooks.example.com/…"
+              required
+            />
+          </label>
+          <button type="submit" disabled={busy}>
+            Save webhook
+          </button>
+        </form>
       </div>
 
       <h2>Integrations</h2>

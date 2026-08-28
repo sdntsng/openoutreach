@@ -647,6 +647,66 @@ const TOOLS: ToolDef[] = [
       path: `/api/v1/threads/${enc(a.campaign_id)}/${enc(a.lead_id)}/suggest-reply`,
     }),
   },
+  {
+    name: "outreach_setup",
+    description: "First-run checklist: account/campaign/lead counts and next actions. Does not send.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    call: () => ({ method: "GET", path: "/api/v1/setup" }),
+  },
+  {
+    name: "outreach_clone_campaign",
+    description: "Clone a campaign as a new draft (never activates). Copies leads unless leads_csv is provided.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string" },
+        name: { type: "string" },
+        leads_csv: { type: "string" },
+      },
+      required: ["campaign_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/campaigns/${enc(a.campaign_id)}/clone`,
+      body: { name: a.name, leads_csv: a.leads_csv },
+    }),
+  },
+  {
+    name: "outreach_list_suppressions",
+    description: "List workspace suppression emails/domains.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    call: () => ({ method: "GET", path: "/api/v1/suppressions" }),
+  },
+  {
+    name: "outreach_add_suppression",
+    description: "Add an email or domain to the global suppression list. Honored on future imports. Does not send.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        email: { type: "string" },
+        domain: { type: "string" },
+        kind: { type: "string" },
+        value: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/suppressions", body: a }),
+  },
+  {
+    name: "outreach_verify_leads",
+    description: "Syntax + MX + disposable check. No third-party API key.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        emails: { type: "array", items: { type: "string" } },
+        csv: { type: "string" },
+        email: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/leads/verify", body: a }),
+  },
 ];
 
 function enc(v: unknown): string {

@@ -61,6 +61,44 @@ export interface OverviewStats {
   note?: string;
 }
 
+export interface SetupStatus {
+  workspace_id?: string;
+  accounts: number;
+  campaigns: number;
+  leads: number;
+  suppressions?: number;
+  encryption_ready: boolean;
+  google_oauth_ready?: boolean;
+  next_actions?: string[];
+}
+
+export interface Suppression {
+  id: number;
+  kind: string;
+  value: string;
+  created_at?: string;
+}
+
+export interface VerifyResult {
+  email: string;
+  ok: boolean;
+  reason?: string;
+  disposable?: boolean;
+  mx?: boolean;
+}
+
+export interface DNSCheck {
+  email: string;
+  domain: string;
+  mx: boolean;
+  mx_records?: string[];
+  spf: boolean;
+  spf_record?: string;
+  dmarc: boolean;
+  dmarc_record?: string;
+  note?: string;
+}
+
 export interface Account {
   id: string | number;
   email: string;
@@ -161,6 +199,8 @@ export const api = {
   getCampaignPreview: (id: string | number) =>
     request<unknown>(`/campaigns/${id}/preview?render=1`),
 
+  setup: () => request<SetupStatus>("/setup"),
+
   createCampaign: (body: {
     name: string;
     sequence_yaml?: string;
@@ -169,6 +209,10 @@ export const api = {
     account_ids?: Array<string | number>;
     open_tracking?: boolean;
     draft_only?: boolean;
+    send_window_start?: string;
+    send_window_end?: string;
+    send_days?: string;
+    timezone?: string;
   }) =>
     request<{
       campaign_id: number;
@@ -185,8 +229,40 @@ export const api = {
         accounts: body.accounts || [],
         open_tracking: body.open_tracking,
         draft_only: body.draft_only ?? true,
+        send_window_start: body.send_window_start,
+        send_window_end: body.send_window_end,
+        send_days: body.send_days,
+        timezone: body.timezone,
       }),
     }),
+
+  cloneCampaign: (id: string | number, body?: { name?: string; leads_csv?: string }) =>
+    request<{ campaign_id: number; name: string; status: string }>(`/campaigns/${id}/clone`, {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
+
+  patchCampaign: (
+    id: string | number,
+    body: {
+      sequence_yaml?: string;
+      send_window_start?: string;
+      send_window_end?: string;
+      send_days?: string;
+      timezone?: string;
+      open_tracking?: boolean;
+    },
+  ) =>
+    request<unknown>(`/campaigns/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  exportCampaignLeads: (id: string | number) =>
+    request<{ csv: string; count: number }>(`/campaigns/${id}/leads/export`),
+
+  preflightCampaign: (id: string | number) =>
+    request<{ ready?: boolean; warnings?: string[] }>(`/campaigns/${id}/preflight`),
 
   activateCampaign: (id: string | number) =>
     request<unknown>(`/campaigns/${id}/activate`, {
@@ -219,12 +295,36 @@ export const api = {
     }),
 
   listLeads: (q?: string) => {
-    const qs = q ? `?domain=${encodeURIComponent(q)}` : "";
+    const qs = q ? `?q=${encodeURIComponent(q)}` : "";
     return request<{ leads: Lead[] }>(`/leads${qs}`);
   },
 
+  exportLeads: (q?: string) => {
+    const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+    return request<{ csv: string; count: number }>(`/leads/export${qs}`);
+  },
+
+  verifyLeads: (body: { emails?: string[]; csv?: string; email?: string }) =>
+    request<{ results: VerifyResult[]; valid: number; invalid: number; total: number }>(
+      "/leads/verify",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  listSuppressions: () => request<{ suppressions: Suppression[] }>("/suppressions"),
+
+  addSuppression: (body: { email?: string; domain?: string; kind?: string; value?: string; csv?: string }) =>
+    request<unknown>("/suppressions", { method: "POST", body: JSON.stringify(body) }),
+
+  deleteSuppression: (id: string | number) =>
+    request<unknown>(`/suppressions/${id}`, { method: "DELETE" }),
+
   blacklistLead: (id: string | number) =>
     request<unknown>(`/leads/${id}/blacklist`, { method: "POST", body: "{}" }),
+
+  accountDNS: (id: string | number) => request<DNSCheck>(`/accounts/${id}/dns`),
+
+  removeAccount: (id: string | number) =>
+    request<unknown>(`/accounts/${id}/remove`, { method: "POST", body: "{}" }),
 
   listInbox: () => request<{ threads: InboxThread[] }>("/inbox"),
 

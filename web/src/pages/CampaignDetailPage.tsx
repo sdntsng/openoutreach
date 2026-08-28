@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, type CampaignStats } from "../api";
 
 type Tab = "overview" | "sequence" | "preview" | "stats";
@@ -12,8 +12,19 @@ function str(v: unknown, fallback = "—"): string {
   return String(v);
 }
 
+function downloadCSV(filename: string, csv: string) {
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function CampaignDetailPage() {
   const { id = "" } = useParams();
+  const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("overview");
   const [campaign, setCampaign] = useState<Record<string, unknown> | null>(null);
   const [stats, setStats] = useState<CampaignStats | null>(null);
@@ -111,6 +122,37 @@ export default function CampaignDetailPage() {
               Resume
             </button>
           )}
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => {
+              const next = window.prompt("Clone as draft. New name?", `${name}-copy`);
+              if (!next) return;
+              setBusy(true);
+              setError(null);
+              api
+                .cloneCampaign(id, { name: next })
+                .then((res) => navigate(`/campaigns/${res.campaign_id}`))
+                .catch((err: Error) => setError(err.message))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Clone
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => {
+              void api
+                .exportCampaignLeads(id)
+                .then((res) => downloadCSV(`${name}-leads.csv`, res.csv))
+                .catch((err: Error) => setError(err.message));
+            }}
+          >
+            Export leads
+          </button>
         </div>
       </div>
       {campaign && (
