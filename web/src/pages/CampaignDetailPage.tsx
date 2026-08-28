@@ -122,6 +122,24 @@ export default function CampaignDetailPage() {
               Resume
             </button>
           )}
+          {(status === "draft" || status === "paused") && (
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => {
+                void run(() =>
+                  api.preflightCampaign(id).then((res) => {
+                    const warns = res.warnings?.length ? res.warnings.join(" · ") : "no warnings";
+                    window.alert(`${res.ready ? "Ready" : "Not ready"} — ${warns}`);
+                    return res;
+                  }),
+                );
+              }}
+            >
+              Preflight
+            </button>
+          )}
           <button
             type="button"
             className="secondary"

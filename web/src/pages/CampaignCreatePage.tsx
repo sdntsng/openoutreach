@@ -41,6 +41,7 @@ export default function CampaignCreatePage() {
   const [windowEnd, setWindowEnd] = useState("17:00");
   const [timezone, setTimezone] = useState("UTC");
   const [openTracking, setOpenTracking] = useState(false);
+  const [preflight, setPreflight] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -238,6 +239,26 @@ export default function CampaignCreatePage() {
           <p>
             <strong>Consequential:</strong> Activate starts sending due emails via the tick engine.
           </p>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy || campaignId == null}
+            onClick={() => {
+              if (campaignId == null) return;
+              setBusy(true);
+              api
+                .preflightCampaign(campaignId)
+                .then((res) => {
+                  const warns = res.warnings?.length ? res.warnings.join(" · ") : "no warnings";
+                  setPreflight(`${res.ready ? "Ready" : "Not ready"} — ${warns}`);
+                })
+                .catch((err: Error) => setError(err.message))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Run preflight
+          </button>
+          {preflight && <p className="muted">{preflight}</p>}
           <button type="button" className="danger" onClick={onActivate} disabled={busy}>
             Activate campaign
           </button>
