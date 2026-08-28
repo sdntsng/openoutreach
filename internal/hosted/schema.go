@@ -130,6 +130,14 @@ var hostedSchemaSQLite = []string{
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY (workspace_id, provider, idempotency_key)
 	)`,
+	`CREATE TABLE IF NOT EXISTS suppressions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		workspace_id TEXT NOT NULL DEFAULT 'default',
+		kind TEXT NOT NULL,
+		value TEXT NOT NULL,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(workspace_id, kind, value)
+	)`,
 }
 
 var hostedSchemaPostgres = []string{
@@ -234,5 +242,13 @@ var hostedSchemaPostgres = []string{
 		idempotency_key TEXT NOT NULL,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		PRIMARY KEY (workspace_id, provider, idempotency_key)
+	)`,
+	`CREATE TABLE IF NOT EXISTS suppressions (
+		id BIGSERIAL PRIMARY KEY,
+		workspace_id TEXT NOT NULL DEFAULT 'default',
+		kind TEXT NOT NULL,
+		value TEXT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		UNIQUE(workspace_id, kind, value)
 	)`,
 }

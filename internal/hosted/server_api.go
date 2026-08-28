@@ -408,6 +408,16 @@ func (s *Server) handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
+	var skipped int
+	if req.LeadsCSV != "" {
+		filtered, n, ferr := s.filterSuppressedCSV(ws, req.LeadsCSV)
+		if ferr != nil {
+			writeErr(w, http.StatusBadRequest, "create_failed", ferr.Error())
+			return
+		}
+		req.LeadsCSV = filtered
+		skipped = n
+	}
 	if req.DraftOnly || (req.SequenceYAML == "" && req.LeadsCSV == "") {
 		res, err := engine.CreateDraftCampaign(s.Store.DB, engine.CreateDraftCampaignOpts{
 			WorkspaceID: ws, Name: req.Name, AccountEmails: req.Accounts,
@@ -421,11 +431,15 @@ func (s *Server) handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 		if req.OpenTracking {
 			_ = SetHostedKV(s.Store.DB, fmt.Sprintf("campaign_open_tracking:%d", res.ID), "1")
 		}
+		warnings := append([]string{}, res.Warnings...)
+		if skipped > 0 {
+			warnings = append(warnings, fmt.Sprintf("%d suppressed leads skipped", skipped))
+		}
 		writeJSON(w, http.StatusCreated, envelope{Data: map[string]any{
 			"campaign_id": res.ID, "status": "draft", "name": res.Name,
-			"lead_count": 0, "warnings": res.Warnings,
+			"lead_count": 0, "warnings": warnings,
 			"next_actions": []string{"add_leads", "preview_campaign", "activate_campaign"},
-		}})
+		}, Warnings: warnings})
 		return
 	}
 	res, err := engine.CreateCampaign(s.Store.DB, engine.CreateCampaignOpts{
@@ -440,15 +454,19 @@ func (s *Server) handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 	if req.OpenTracking {
 		_ = SetHostedKV(s.Store.DB, fmt.Sprintf("campaign_open_tracking:%d", res.ID), "1")
 	}
+	warnings := append([]string{}, res.Warnings...)
+	if skipped > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d suppressed leads skipped", skipped))
+	}
 	writeJSON(w, http.StatusCreated, envelope{Data: map[string]any{
 		"campaign_id":        res.ID,
 		"status":             "draft",
 		"name":               res.Name,
 		"lead_count":         res.Leads,
 		"scheduled_messages": res.ScheduledSends,
-		"warnings":           res.Warnings,
+		"warnings":           warnings,
 		"next_actions":       []string{"preview_campaign", "activate_campaign"},
-	}, Warnings: res.Warnings})
+	}, Warnings: warnings})
 }
 
 func (s *Server) handleGetCampaign(w http.ResponseWriter, r *http.Request) {
@@ -591,6 +609,15 @@ func (s *Server) handleAddLeads(w http.ResponseWriter, r *http.Request) {
 	if req.CSV == "" {
 		req.CSV = string(body)
 	}
+	ws := s.workspaceFromRequest(r)
+	filtered, skipped, ferr := s.filterSuppressedCSV(ws, req.CSV)
+	if ferr != nil && !req.DryRun {
+		writeErr(w, http.StatusBadRequest, "add_leads_failed", ferr.Error())
+		return
+	}
+	if ferr == nil {
+		req.CSV = filtered
+	}
 	if req.DryRun {
 		records, _, err := internal.ParseLeadsCSVFromReader(strings.NewReader(req.CSV))
 		if err != nil {
@@ -617,9 +644,15 @@ func (s *Server) handleAddLeads(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "add_leads_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+	out := map[string]any{
 		"result": res, "next_actions": []string{"preview_campaign", "activate_campaign"},
-	}})
+	}
+	var warnings []string
+	if skipped > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d suppressed leads skipped", skipped))
+		out["suppressed_skipped"] = skipped
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: out, Warnings: warnings})
 }
 
 func (s *Server) handleRemoveLead(w http.ResponseWriter, r *http.Request) {
@@ -841,13 +874,17 @@ func (s *Server) handleValidateLeads(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListLeads(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	domain := r.URL.Query().Get("domain")
 	status := r.URL.Query().Get("status")
 	limit := 100
-	leads, err := internal.ListLeads(s.Store.DB, domain, status, limit)
+	leads, err := searchLeads(s.Store.DB, q, domain, status, limit)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
+	}
+	if leads == nil {
+		leads = []internal.LeadListRow{}
 	}
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{"leads": leads}})
 }
@@ -866,6 +903,12 @@ func (s *Server) handleBlacklistLead(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "blacklist_failed", err.Error())
 		return
 	}
+	kind := "email"
+	value := strings.ToLower(strings.TrimSpace(target))
+	if !strings.Contains(value, "@") {
+		kind = "domain"
+	}
+	_, _ = s.upsertSuppression(s.workspaceFromRequest(r), kind, value)
 	writeJSON(w, http.StatusOK, envelope{Data: res})
 }
 

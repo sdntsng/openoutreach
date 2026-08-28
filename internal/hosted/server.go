@@ -185,7 +185,9 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("POST /api/v1/accounts/{id}/pause", s.handlePauseAccount)
 	s.Mux.HandleFunc("POST /api/v1/accounts/{id}/resume", s.handleResumeAccount)
 	s.Mux.HandleFunc("POST /api/v1/accounts/{id}/remove", s.handleRemoveAccount)
+	s.Mux.HandleFunc("GET /api/v1/accounts/{id}/dns", s.handleAccountDNS)
 
+	s.Mux.HandleFunc("GET /api/v1/setup", s.handleSetup)
 	s.Mux.HandleFunc("GET /api/v1/settings/capabilities", s.handleCapabilities)
 	s.Mux.HandleFunc("GET /api/v1/integrations", s.handleListIntegrations)
 	s.Mux.HandleFunc("POST /api/v1/integrations", s.handlePutIntegration)
@@ -207,6 +209,9 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("GET /api/v1/campaigns", s.handleListCampaigns)
 	s.Mux.HandleFunc("POST /api/v1/campaigns", s.handleCreateCampaign)
 	s.Mux.HandleFunc("GET /api/v1/campaigns/{id}", s.handleGetCampaign)
+	s.Mux.HandleFunc("PATCH /api/v1/campaigns/{id}", s.handlePatchCampaign)
+	s.Mux.HandleFunc("POST /api/v1/campaigns/{id}/clone", s.handleCloneCampaign)
+	s.Mux.HandleFunc("GET /api/v1/campaigns/{id}/leads/export", s.handleExportCampaignLeads)
 	s.Mux.HandleFunc("POST /api/v1/campaigns/{id}/activate", s.handleActivateCampaign)
 	s.Mux.HandleFunc("POST /api/v1/campaigns/{id}/pause", s.handlePauseCampaign)
 	s.Mux.HandleFunc("POST /api/v1/campaigns/{id}/resume", s.handleResumeCampaign)
@@ -222,7 +227,12 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("GET /api/v1/threads/{campaignId}/{leadId}/suggest-reply", s.handleSuggestReply)
 
 	s.Mux.HandleFunc("POST /api/v1/leads/validate", s.handleValidateLeads)
+	s.Mux.HandleFunc("POST /api/v1/leads/verify", s.handleVerifyLeads)
+	s.Mux.HandleFunc("GET /api/v1/leads/export", s.handleExportLeads)
 	s.Mux.HandleFunc("GET /api/v1/leads", s.handleListLeads)
+	s.Mux.HandleFunc("GET /api/v1/suppressions", s.handleListSuppressions)
+	s.Mux.HandleFunc("POST /api/v1/suppressions", s.handleAddSuppression)
+	s.Mux.HandleFunc("DELETE /api/v1/suppressions/{id}", s.handleDeleteSuppression)
 	s.Mux.HandleFunc("POST /api/v1/leads/{id}/blacklist", s.handleBlacklistLead)
 	s.Mux.HandleFunc("POST /api/v1/leads/{id}/pause", s.handlePauseLead)
 
@@ -292,6 +302,7 @@ func (s *Server) handleTick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.SyncScheduledSheets()
+	s.dispatchOutboundEvents(s.WorkspaceID)
 	_ = TouchLastTick(s.Store.DB)
 	if result.RepliesDetected > 0 || result.BouncesDetected > 0 || result.Sent > 0 {
 		_ = SetHostedKV(s.Store.DB, "last_successful_gmail_poll", time.Now().UTC().Format(time.RFC3339))

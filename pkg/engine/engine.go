@@ -14,6 +14,7 @@ type BackfillEmailMessagesConfig = internal.BackfillEmailMessagesConfig
 type BackfillEmailMessagesResult = internal.BackfillEmailMessagesResult
 type CreateCampaignOpts = internal.CreateCampaignOpts
 type CreateDraftCampaignOpts = internal.CreateDraftCampaignOpts
+type CloneCampaignOpts = internal.CloneCampaignOpts
 type AddSMTPIMAPAccountOpts = internal.AddSMTPIMAPAccountOpts
 type AddSMTPIMAPAccountResult = internal.AddSMTPIMAPAccountResult
 type CreateCampaignResult = internal.CreateCampaignResult
@@ -37,6 +38,7 @@ type Store = internal.Store
 type TickConfig = internal.TickConfig
 type TickResult = internal.TickResult
 type UpdateAccountOpts = internal.UpdateAccountOpts
+type UpdateCampaignOpts = internal.UpdateCampaignOpts
 type UpdateSMTPIMAPAccountOpts = internal.UpdateSMTPIMAPAccountOpts
 
 const (
@@ -70,6 +72,14 @@ func CreateDraftCampaign(db *sql.DB, opts CreateDraftCampaignOpts) (*CreateCampa
 
 func CreateCampaign(db *sql.DB, opts CreateCampaignOpts) (*CreateCampaignResult, error) {
 	return internal.CreateCampaign(db, opts)
+}
+
+func CloneCampaign(db *sql.DB, opts CloneCampaignOpts) (*CreateCampaignResult, error) {
+	return internal.CloneCampaign(db, opts)
+}
+
+func UpdateCampaign(db *sql.DB, name string, opts UpdateCampaignOpts) error {
+	return internal.UpdateCampaign(db, name, opts)
 }
 
 func PauseAccount(db *sql.DB, email string) (*PauseAccountResult, error) {

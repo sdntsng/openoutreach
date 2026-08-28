@@ -32,8 +32,11 @@ func TestCapabilitiesAndIntegrationsVault(t *testing.T) {
 	if !env.Data.Integrations["apollo"] {
 		t.Fatal("expected apollo feature on")
 	}
-	if env.Data.Integrations["warmup"] {
-		t.Fatal("warmup should be off by default")
+	if !env.Data.Integrations["warmup"] {
+		t.Fatal("warmup should be on by default (set FEATURE_WARMUP=0 to hide)")
+	}
+	if !env.Data.Integrations["outbound"] {
+		t.Fatal("outbound webhook feature should be on by default")
 	}
 
 	body := `{"provider":"apollo","name":"default","secret":"test-apollo-key-12345678"}`
@@ -254,6 +257,7 @@ func TestMicrosoftOAuthStartRequiresConfig(t *testing.T) {
 }
 
 func TestResendDisabledAndBounceWebhook(t *testing.T) {
+	t.Setenv("FEATURE_RESEND", "0")
 	srv, _ := setupHosted(t)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/resend", strings.NewReader(`{"email":"from@acme.com","api_key":"re_test"}`))
@@ -386,6 +390,7 @@ func TestAccountsWarmupAndReplyMode(t *testing.T) {
 }
 
 func TestCFEmailDisabledAddSendAndInbound(t *testing.T) {
+	t.Setenv("FEATURE_CF_EMAIL", "0")
 	srv, _ := setupHosted(t)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/cf-email", strings.NewReader(`{"email":"from@acme.com","api_token":"cf-secret-token-xxxx","account_id":"acc123"}`))

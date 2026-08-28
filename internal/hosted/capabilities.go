@@ -57,14 +57,18 @@ func BuildCapabilities(workspaceID, publicBaseURL string, encryptionReady, googl
 	gmailOn := envTruthy("FEATURE_GMAIL", googleReady || strings.TrimSpace(os.Getenv("OPENOUTREACH_MOCK_GMAIL")) == "1")
 	smtpOn := envTruthy("FEATURE_SMTP_IMAP", true)
 	msOn := envTruthy("FEATURE_MICROSOFT", microsoftReady)
-	resendOn := envTruthy("FEATURE_RESEND", false)
-	sesOn := envTruthy("FEATURE_SES", false)
-	cfEmailOn := envTruthy("FEATURE_CF_EMAIL", false)
+	// Default ON so a fresh deploy can be configured from the web app.
+	// Operators still hide a provider with FEATURE_*=0.
+	resendOn := envTruthy("FEATURE_RESEND", true)
+	sesOn := envTruthy("FEATURE_SES", true)
+	cfEmailOn := envTruthy("FEATURE_CF_EMAIL", true)
 
 	apolloOn := envTruthy("FEATURE_APOLLO", true)
 	clayOn := envTruthy("FEATURE_CLAY", true)
 	webhookOn := envTruthy("FEATURE_WEBHOOK", true)
 	sheetsOn := envTruthy("FEATURE_SHEETS", true)
+	hunterOn := envTruthy("FEATURE_HUNTER", true)
+	warmupOn := envTruthy("FEATURE_WARMUP", true)
 
 	c := Capabilities{
 		WorkspaceID:   workspaceID,
@@ -80,12 +84,13 @@ func BuildCapabilities(workspaceID, publicBaseURL string, encryptionReady, googl
 			"cf_email":  cfEmailOn,
 		},
 		Integrations: map[string]bool{
-			"apollo":  apolloOn,
-			"clay":    clayOn,
-			"webhook": webhookOn,
-			"sheets":  sheetsOn,
-			"hunter":  envTruthy("FEATURE_HUNTER", false),
-			"warmup":  envTruthy("FEATURE_WARMUP", false),
+			"apollo":    apolloOn,
+			"clay":      clayOn,
+			"webhook":   webhookOn,
+			"sheets":    sheetsOn,
+			"hunter":    hunterOn,
+			"warmup":    warmupOn,
+			"outbound":  webhookOn,
 		},
 		EncryptionReady:  encryptionReady,
 		GoogleOAuthReady: googleReady,
@@ -105,7 +110,8 @@ func BuildCapabilities(workspaceID, publicBaseURL string, encryptionReady, googl
 		"FEATURE_RESEND":    boolStr(resendOn),
 		"FEATURE_SES":       boolStr(sesOn),
 		"FEATURE_CF_EMAIL":  boolStr(cfEmailOn),
-		"FEATURE_WARMUP":    boolStr(envTruthy("FEATURE_WARMUP", false)),
+		"FEATURE_HUNTER":    boolStr(hunterOn),
+		"FEATURE_WARMUP":    boolStr(warmupOn),
 	}
 	return c
 }
