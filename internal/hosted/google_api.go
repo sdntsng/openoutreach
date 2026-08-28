@@ -47,10 +47,10 @@ func (c GoogleOAuthConfig) OAuth2() *oauth2.Config {
 
 // GoogleAPIProvider implements internal.GWSClient via Gmail REST API.
 type GoogleAPIProvider struct {
-	Store          CredentialStore
-	OAuth          *oauth2.Config
-	OnAuthFailure  func(accountEmail string, err error)
-	HTTPClient     *http.Client
+	Store            CredentialStore
+	OAuth            *oauth2.Config
+	OnAuthFailure    func(accountEmail string, err error)
+	HTTPClient       *http.Client
 	accountEmailToID map[string]int64
 }
 
@@ -318,11 +318,11 @@ func FetchGoogleUserEmail(ctx context.Context, client *http.Client) (string, str
 
 // RoutingGWS prefers GoogleAPIProvider when a mapping exists, else Microsoft Graph, else CLI gws.
 type RoutingGWS struct {
-	API       *GoogleAPIProvider
-	Microsoft *MicrosoftGraphProvider
+	API        *GoogleAPIProvider
+	Microsoft  *MicrosoftGraphProvider
 	APIMailers map[string]*APIMailerProvider
-	CLI       internal.GWSClient
-	Mock      *MockGmail
+	CLI        internal.GWSClient
+	Mock       *MockGmail
 }
 
 func (r *RoutingGWS) SendEmail(account, to, rawMsg, threadID string) (string, string, error) {
@@ -400,7 +400,10 @@ func (r *RoutingGWS) GetMessage(account, msgID string) (*internal.GWSMessage, er
 	}
 	if r.APIMailers != nil {
 		if _, ok := r.APIMailers[strings.ToLower(account)]; ok {
-			return &internal.GWSMessage{ID: msgID, ThreadID: msgID}, nil
+			return &internal.GWSMessage{
+				ID: msgID, ThreadID: msgID,
+				Headers: map[string]string{"Message-ID": msgID},
+			}, nil
 		}
 	}
 	if r.CLI != nil {

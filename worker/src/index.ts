@@ -42,6 +42,9 @@ export interface Env {
   FEATURE_SHEETS?: string;
   FEATURE_RESEND?: string;
   FEATURE_SES?: string;
+  FEATURE_CF_EMAIL?: string;
+  FEATURE_WARMUP?: string;
+  FEATURE_HUNTER?: string;
 }
 
 export class OutreachContainer extends Container<Env> {
@@ -89,6 +92,9 @@ export class OutreachContainer extends Container<Env> {
       ["FEATURE_SHEETS", "FEATURE_SHEETS"],
       ["FEATURE_RESEND", "FEATURE_RESEND"],
       ["FEATURE_SES", "FEATURE_SES"],
+      ["FEATURE_CF_EMAIL", "FEATURE_CF_EMAIL"],
+      ["FEATURE_WARMUP", "FEATURE_WARMUP"],
+      ["FEATURE_HUNTER", "FEATURE_HUNTER"],
     ];
     for (const [from, to] of map) {
       const v = e[from];
@@ -464,5 +470,37 @@ export default {
         body: "{}",
       }),
     );
+  },
+
+  /**
+   * Cloudflare Email Routing → Worker. Do not add a wrangler send_email binding
+   * by default (deploy breaks until Email Sending is onboarded). Inbound only.
+   */
+  async email(
+    message: { from: string; to: string; raw: ReadableStream },
+    env: Env,
+  ): Promise<void> {
+    const raw = await new Response(message.raw).text();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    };
+    if (env.INTERNAL_CONTAINER_TOKEN) {
+      headers["X-Internal-Token"] = env.INTERNAL_CONTAINER_TOKEN;
+    }
+    try {
+      const res = await containerStub(env).fetch(
+        new Request("http://container/api/v1/integrations/cf-email/inbound", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ from: message.from, to: message.to, raw }),
+        }),
+      );
+      if (!res.ok) {
+        console.error("cf-email inbound failed", res.status, await res.text());
+      }
+    } catch (err) {
+      console.error("cf-email inbound error", err);
+    }
   },
 };

@@ -59,6 +59,7 @@ func BuildCapabilities(workspaceID, publicBaseURL string, encryptionReady, googl
 	msOn := envTruthy("FEATURE_MICROSOFT", microsoftReady)
 	resendOn := envTruthy("FEATURE_RESEND", false)
 	sesOn := envTruthy("FEATURE_SES", false)
+	cfEmailOn := envTruthy("FEATURE_CF_EMAIL", false)
 
 	apolloOn := envTruthy("FEATURE_APOLLO", true)
 	clayOn := envTruthy("FEATURE_CLAY", true)
@@ -76,6 +77,7 @@ func BuildCapabilities(workspaceID, publicBaseURL string, encryptionReady, googl
 			"microsoft": msOn,
 			"resend":    resendOn,
 			"ses":       sesOn,
+			"cf_email":  cfEmailOn,
 		},
 		Integrations: map[string]bool{
 			"apollo":  apolloOn,
@@ -102,6 +104,7 @@ func BuildCapabilities(workspaceID, publicBaseURL string, encryptionReady, googl
 		"FEATURE_SHEETS":    boolStr(sheetsOn),
 		"FEATURE_RESEND":    boolStr(resendOn),
 		"FEATURE_SES":       boolStr(sesOn),
+		"FEATURE_CF_EMAIL":  boolStr(cfEmailOn),
 		"FEATURE_WARMUP":    boolStr(envTruthy("FEATURE_WARMUP", false)),
 	}
 	return c

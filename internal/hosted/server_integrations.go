@@ -120,7 +120,7 @@ func TestIntegrationProvider(provider, secret string) (bool, string, error) {
 	switch provider {
 	case "apollo":
 		return testApolloKey(secret)
-	case "clay", "webhook", "sheets", "secret", "smtp_password", "resend", "ses", "hunter", "warmup":
+	case "clay", "webhook", "sheets", "secret", "smtp_password", "resend", "ses", "hunter", "warmup", "cf_email":
 		return true, "credential present (provider does not require live ping)", nil
 	case "microsoft", "gmail":
 		return true, "use OAuth connect flow for mailbox providers", nil

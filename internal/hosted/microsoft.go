@@ -486,12 +486,13 @@ func fetchMicrosoftProfile(accessToken string) (email, id string, err error) {
 	return email, profile.ID, nil
 }
 
-// APIMailerProvider sends via Resend (send-only). SES uses SMTP_IMAP in practice.
+// APIMailerProvider sends via Resend or Cloudflare Email Sending (GWSClient).
 type APIMailerProvider struct {
-	Provider string
-	APIKey   string
-	From     string
-	Client   *http.Client
+	Provider  string
+	APIKey    string
+	From      string
+	AccountID string
+	Client    *http.Client
 }
 
 func (p *APIMailerProvider) SendEmail(account, to, rawMsg, threadID string) (string, string, error) {
@@ -536,11 +537,117 @@ func (p *APIMailerProvider) SendEmail(account, to, rawMsg, threadID string) (str
 			threadID = out.ID
 		}
 		return out.ID, threadID, nil
+	case AccountProviderCFEmail, "cloudflare":
+		return p.sendCloudflareEmail(from, to, subject, bodyText, rawMsg, threadID)
 	case "ses":
 		return "", "", fmt.Errorf("SES: use SMTP/IMAP account against the SES SMTP endpoint (SigV4 HTTP not wired); see docs/INTEGRATIONS.md")
 	default:
 		return "", "", fmt.Errorf("unknown api mailer %s", p.Provider)
 	}
+}
+
+func (p *APIMailerProvider) sendCloudflareEmail(from, to, subject, bodyText, rawMsg, threadID string) (string, string, error) {
+	if strings.TrimSpace(p.AccountID) == "" {
+		return "", "", fmt.Errorf("cloudflare email account_id is required")
+	}
+	msgID := headerFromRaw(rawMsg, "Message-ID")
+	if msgID == "" {
+		msgID = fmt.Sprintf("<cf-%d@%s>", time.Now().UnixNano(), domainOf(from))
+	}
+	// Message-ID is platform-controlled on Cloudflare Email Sending and is
+	// rejected in `headers` (E_HEADER_NOT_ALLOWED). Keep our RFC id for events.
+	headers := map[string]string{}
+	if irt := headerFromRaw(rawMsg, "In-Reply-To"); irt != "" {
+		headers["In-Reply-To"] = irt
+	} else if threadID != "" {
+		headers["In-Reply-To"] = threadID
+	}
+	if refs := headerFromRaw(rawMsg, "References"); refs != "" {
+		headers["References"] = refs
+	} else if headers["In-Reply-To"] != "" {
+		headers["References"] = headers["In-Reply-To"]
+	}
+	if unsub := headerFromRaw(rawMsg, "List-Unsubscribe"); unsub != "" {
+		headers["List-Unsubscribe"] = unsub
+	}
+	if unsubPost := headerFromRaw(rawMsg, "List-Unsubscribe-Post"); unsubPost != "" {
+		headers["List-Unsubscribe-Post"] = unsubPost
+	}
+	payload := map[string]any{
+		"from": from, "to": to, "subject": subject, "text": bodyText,
+	}
+	if len(headers) > 0 {
+		payload["headers"] = headers
+	}
+	raw, _ := json.Marshal(payload)
+	endpoint := strings.TrimRight(os.Getenv("CF_EMAIL_API_BASE"), "/")
+	if endpoint == "" {
+		endpoint = "https://api.cloudflare.com/client/v4"
+	}
+	u := endpoint + "/accounts/" + url.PathEscape(p.AccountID) + "/email/sending/send"
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(raw))
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+p.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return "", "", fmt.Errorf("cloudflare email HTTP %d: %s", res.StatusCode, truncateBytes(body, 200))
+	}
+	var out struct {
+		Success bool `json:"success"`
+		Errors  []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+		Result struct {
+			PermanentBounces []string `json:"permanent_bounces"`
+			Delivered        []string `json:"delivered"`
+			Queued           []string `json:"queued"`
+		} `json:"result"`
+	}
+	_ = json.Unmarshal(body, &out)
+	if !out.Success {
+		if len(out.Errors) > 0 {
+			return "", "", fmt.Errorf("cloudflare email: %s", out.Errors[0].Message)
+		}
+		return "", "", fmt.Errorf("cloudflare email: request unsuccessful: %s", truncateBytes(body, 200))
+	}
+	toLower := strings.ToLower(to)
+	for _, b := range out.Result.PermanentBounces {
+		if strings.ToLower(b) == toLower {
+			return "", "", fmt.Errorf("cloudflare email permanent bounce: %s", b)
+		}
+	}
+	if threadID == "" {
+		threadID = msgID
+	}
+	return msgID, threadID, nil
+}
+
+func headerFromRaw(rawMsg, name string) string {
+	msg, err := mail.ReadMessage(strings.NewReader(rawMsg))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(msg.Header.Get(name))
+}
+
+func domainOf(email string) string {
+	_, domain, ok := strings.Cut(email, "@")
+	if !ok || domain == "" {
+		return "openoutreach.local"
+	}
+	return domain
 }
 
 func (p *APIMailerProvider) ListMessages(string, string, ...bool) ([]internal.GWSMessage, error) {

@@ -44,6 +44,60 @@ const TOOLS: ToolDef[] = [
     call: () => ({ method: "GET", path: "/api/v1/accounts" }),
   },
   {
+    name: "outreach_add_cf_email_account",
+    description:
+      "Add a Cloudflare Email Sending account (FEATURE_CF_EMAIL). API token is vaulted and never returned. Transactional send; replies need Email Routing to this Worker. Does not send campaign mail.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        email: { type: "string", description: "From address on a domain onboarded to Cloudflare Email Sending" },
+        api_token: { type: "string", description: "Cloudflare API token with Email Sending Edit" },
+        account_id: { type: "string", description: "Cloudflare account id" },
+        daily_limit: { type: "number" },
+      },
+      required: ["email", "api_token", "account_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: "/api/v1/accounts/cf-email",
+      body: {
+        email: a.email,
+        api_token: a.api_token,
+        account_id: a.account_id,
+        daily_limit: a.daily_limit,
+      },
+    }),
+  },
+  {
+    name: "outreach_pause_account",
+    description: "Pause a sending account so tick will not send from it.",
+    inputSchema: {
+      type: "object",
+      properties: { account_id: { type: "string" } },
+      required: ["account_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/accounts/${enc(a.account_id)}/pause`,
+    }),
+  },
+  {
+    name: "outreach_resume_account",
+    description: "Resume a paused sending account.",
+    inputSchema: {
+      type: "object",
+      properties: { account_id: { type: "string" } },
+      required: ["account_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/accounts/${enc(a.account_id)}/resume`,
+    }),
+  },
+  {
     name: "outreach_get_account_status",
     description: "Get status for one sending account (active, paused, reconnect_required).",
     inputSchema: {

@@ -114,11 +114,14 @@ func (s *Server) handleAccountStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // mailboxSurface is the Accounts-page health view for a send provider.
-// API mailers are send-only (bounce webhook, no IMAP/Graph poll). Warmup is never a send path.
+// Resend is send-only (bounce webhook). Cloudflare Email uses Email Routing for replies.
+// Warmup is never a send path.
 func mailboxSurface(provider string) (replyMode, domainVerification string) {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "resend", "ses", "mailgun", "postmark":
 		return "send_only", "dns_at_provider"
+	case "cf_email", "cloudflare":
+		return "email_routing", "dns_at_cloudflare"
 	case "smtp_imap", "smtp":
 		return "imap", "smtp"
 	default:
