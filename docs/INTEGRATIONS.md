@@ -32,7 +32,7 @@ flowchart LR
     Gmail[Gmail_OAuth]
     M365[Microsoft_Graph]
     SMTP[SMTP_IMAP]
-    API[SES_Resend_later]
+    API[SES_Resend_CF_Email]
   end
   ingest --> Vault
   Vault --> Engine
@@ -76,9 +76,9 @@ Keep AGENTS.md invariant: **compose around `GWSClient`**. Do not invent a second
 
 ### B. Transactional API mailers (secondary)
 
-Resend / SES / Postmark / Mailgun — good for high-volume domain send; weak for natural cold-inbox reputation and reply continuity. Ship after mailbox providers; require bounce webhook + optional send-only / no reply poll mode ([#5](https://github.com/sdntsng/openoutreach/issues/5)).
+Resend / SES / Postmark / Mailgun / **Cloudflare Email Sending** — good for high-volume domain send; weak for natural cold-inbox reputation and reply continuity. Ship after mailbox providers; require bounce webhook and/or inbound routing ([#5](https://github.com/sdntsng/openoutreach/issues/5)).
 
-Typical cost: SES ~$0.10/1k emails; Resend ~$20/mo + usage.
+Typical cost: SES ~$0.10/1k emails; Resend ~$20/mo + usage; Cloudflare Email Sending (Workers Paid) 3,000 included/month then ~$0.35/1k. Sending to arbitrary recipients needs Workers Paid. Inbound Email Routing is unlimited.
 
 ### C. External warm email / Instantly-class
 
@@ -122,6 +122,7 @@ Env / Worker secrets / `container-env`, e.g.:
 - `FEATURE_GMAIL=1` (default on when `GOOGLE_CLIENT_*` set)
 - `FEATURE_MICROSOFT=0|1` + `MICROSOFT_CLIENT_ID/SECRET`
 - `FEATURE_SMTP_IMAP=1`
+- `FEATURE_RESEND=0|1`, `FEATURE_CF_EMAIL=0|1`, `FEATURE_SES=0|1`
 - `FEATURE_APOLLO=1`, `FEATURE_CLAY=1`, …
 
 Exposed read-only via `GET /api/v1/settings/capabilities` so UI can hide Connect Microsoft when not configured.
@@ -233,7 +234,9 @@ Webhook + Sheets ([#11](https://github.com/sdntsng/openoutreach/issues/11)), Cla
 Sequence draft, reply triage, preflight ([#13](https://github.com/sdntsng/openoutreach/issues/13)–[#15](https://github.com/sdntsng/openoutreach/issues/15)); Mintlify MCP docs ([#21](https://github.com/sdntsng/openoutreach/issues/21)).
 
 **Phase 4 — API mailers + warmup (deferred)**  
-[#5](https://github.com/sdntsng/openoutreach/issues/5): Resend account (`FEATURE_RESEND=1`) is send-only via `GWSClient`; bounce webhook `POST /api/v1/integrations/resend/events`. SES remains the SMTP/IMAP path. Accounts list surfaces `reply_mode` (`oauth` / `imap` / `send_only`) and `domain_verification` (`oauth` / `smtp` / `dns_at_provider`). Warmup network ([#25](https://github.com/sdntsng/openoutreach/issues/25)) is a vault + capabilities flag + Accounts **status badge** (`healthy` / `unknown` / `error`) — **never** coupled to `engine.Tick`.
+[#5](https://github.com/sdntsng/openoutreach/issues/5): Resend account (`FEATURE_RESEND=1`) is send-only via `GWSClient`; bounce webhook `POST /api/v1/integrations/resend/events`. Cloudflare Email Sending (`FEATURE_CF_EMAIL=1`) is the same `GWSClient` path (`POST /accounts/{account_id}/email/sending/send`); replies via Worker `email()` → `POST /api/v1/integrations/cf-email/inbound` (`X-Internal-Token`). SES remains the SMTP/IMAP path. Accounts list surfaces `reply_mode` (`oauth` / `imap` / `send_only` / `email_routing`) and `domain_verification` (`oauth` / `smtp` / `dns_at_provider` / `dns_at_cloudflare`). Warmup network ([#25](https://github.com/sdntsng/openoutreach/issues/25)) is a vault + capabilities flag + Accounts **status badge** (`healthy` / `unknown` / `error`) — **never** coupled to `engine.Tick`.
+
+Do **not** add a wrangler `send_email` binding by default — deploy fails until Email Sending is onboarded. REST send from outreachd needs no binding.
 
 ---
 
@@ -249,3 +252,46 @@ Sequence draft, reply triage, preflight ([#13](https://github.com/sdntsng/openou
 - In-product LinkedIn scraping
 - Multi-tenant SaaS billing for Apollo credits (users pay Apollo; we show usage logs)
 - Replacing `GWSClient` with a greenfield `MailProvider` stack without re-exporting the same contract
+
+---
+
+## 7. Next ideas (researched, not scheduled)
+
+Small follow-ups that fit the existing engine. Do not revisit Instantly-as-send-backend, LinkedIn scraping, or warmup-in-Tick.
+
+### Easy integrations
+
+| Idea | Why it's small | Caveat |
+|------|----------------|--------|
+| **Hunter / Prospeo** | Same vault + search preview as Apollo (`FEATURE_HUNTER` already in capabilities) | Credit UX only; users pay Hunter |
+| **HubSpot CRM push** | Webhook-out on reply/classify; no send path | Keep create ≠ send |
+| **Cloudflare DNS wizard** | After CF Email account add, call [DNS API](https://developers.cloudflare.com/dns/) to show missing SPF/DKIM for Email Sending | Needs a DNS:Edit token; never invent records the operator did not confirm |
+| **Sheets scheduled sync** | Already re-imported on tick when a `sheets` credential has `campaign_id` | Document in Settings, don't add a second cron |
+
+### UI fixes (ops console)
+
+| Idea | Status |
+|------|--------|
+| Campaign list sent / replies / **Approx. opens** | Shipped on this branch |
+| Account Pause / Resume | Shipped (API existed; dashboard + MCP twins) |
+| Helpful empty states | Shipped on Campaigns / Accounts / Leads |
+| DNS/SPF checklist on Accounts after CF Email connect | Next — read-only records from CF zone API |
+| Inbox empty: point at Email Routing if only `cf_email` accounts exist | Next |
+
+### One-click setup / deploy
+
+Already shipped:
+
+- [Deploy to Cloudflare](https://deploy.workers.cloudflare.com/?url=https://github.com/sdntsng/openoutreach&dir=worker) button (fork + Workers Builds)
+- `./scripts/deploy-cf.sh` (D1 default, secrets, container env, wrangler deploy)
+- D1 as default storage (no Neon/Supabase required)
+
+Worth adding later, in this order:
+
+1. **`FEATURE_*` in `.env.deploy`** forwarded as Worker secrets + baked into `container-env.ts` (so flags survive first boot).
+2. **Workers Builds on `dev`** (staging) — GitHub Action `workflow_dispatch` + `CLOUDFLARE_API_TOKEN`; do **not** auto-deploy `main` without an explicit production go-ahead.
+3. **Email Sending onboard checklist** in Settings: domain, SPF/DKIM, Routing rule → this Worker, `FEATURE_CF_EMAIL=1`. Still no `send_email` binding until the operator has onboarded Email Sending.
+4. **Access setup script** already exists (`scripts/setup-cf-access.sh`). Surface a Settings copy-paste of bypass paths (`/t/*`, `/internal/*`, OAuth callbacks, Clay ingest).
+5. Skip Railway/Fly/Heroku one-click unless someone is not on Cloudflare — the product's tick lock and Worker cron assume this topology.
+
+SMTP alternative for Cloudflare Email Sending: `smtps://smtp.mx.cloudflare.net:465` user `api_token`. That is send-only (no IMAP). Prefer REST + Email Routing for this product so replies hit Inbox.

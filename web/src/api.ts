@@ -289,6 +289,23 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  addCFEmailAccount: (body: {
+    email: string;
+    api_token: string;
+    account_id: string;
+    daily_limit?: number;
+  }) =>
+    request<Account>("/accounts/cf-email", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  pauseAccount: (id: string | number) =>
+    request<unknown>(`/accounts/${id}/pause`, { method: "POST", body: "{}" }),
+
+  resumeAccount: (id: string | number) =>
+    request<unknown>(`/accounts/${id}/resume`, { method: "POST", body: "{}" }),
+
   apolloSearch: (body: {
     q_keywords?: string;
     credential_name?: string;

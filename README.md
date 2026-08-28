@@ -64,7 +64,7 @@ cp .env.deploy.example .env.deploy
 ./scripts/deploy-cf.sh
 ```
 
-Full guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (Postgres options, secrets, Access, OAuth, smoke tests).
+Full guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (Postgres options, secrets, Access, OAuth, Cloudflare Email Sending, smoke tests).
 
 ## Docs
 

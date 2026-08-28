@@ -120,6 +120,21 @@ Cron: `*/2 * * * *` (UTC). Cron does not imply a send — spacing comes from `sc
 | `MICROSOFT_CLIENT_ID` | For Outlook | Entra ID app registration |
 | `MICROSOFT_CLIENT_SECRET` | For Outlook | Entra ID client secret |
 | `MICROSOFT_TENANT_ID` | No | Default `common` |
+| `FEATURE_CF_EMAIL` | No | `1` to enable Cloudflare Email Sending accounts (default off) |
+| `FEATURE_RESEND` | No | `1` to enable Resend send-only accounts |
+
+## Cloudflare Email Sending {#cf-email}
+
+Cloudflare [Email Service](https://developers.cloudflare.com/email-service/) is a **transactional** API mailer (`GWSClient`), not a Gmail/M365 inbox. Weak for cold-inbox reputation vs Workspace mailboxes. Sending to arbitrary recipients requires **Workers Paid** (~3,000 emails/month included, then ~$0.35/1k).
+
+1. Onboard the sending domain in the Cloudflare dashboard (**Compute & AI → Email Service**). Add the SPF/DKIM records it prints.
+2. Create an API token with **Email Sending: Edit** (and Account read if the picker requires it).
+3. Set `FEATURE_CF_EMAIL=1` (Worker secret or `.env.deploy`) and re-deploy so the container sees the flag.
+4. Dashboard → Sending Accounts → **Add Cloudflare Email** (`from` address, Cloudflare **account id**, API token). Token is vaulted and never returned.
+5. **Email Routing:** create a rule that sends mail for that from-address (or the domain) to **this Worker**. The Worker `email()` handler posts MIME to `POST /api/v1/integrations/cf-email/inbound` with `X-Internal-Token`. Do **not** mark that path Access-public; the handler never goes through the browser.
+6. Do **not** add a wrangler `send_email` binding until Email Sending is onboarded — the default deploy has none. outreachd sends via REST (`POST /accounts/{account_id}/email/sending/send`).
+
+SMTP alternative (still no IMAP): `smtp.mx.cloudflare.net:465`, username `api_token`, password = API token. Prefer REST + Routing so replies land in Inbox.
 
 ## Post-deploy checklist
 
@@ -129,7 +144,7 @@ Cron: `*/2 * * * *` (UTC). Cron does not imply a send — spacing comes from `sc
    If `AUTH_MODE=hosted`, also add `{PUBLIC_BASE_URL}/api/auth/callback/google`.
    See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md).
 3. **Auth (default: Cloudflare Access).** Run `./scripts/setup-cf-access.sh` (needs `CLOUDFLARE_API_TOKEN` with **Access: Apps and Policies Write** — `wrangler login` OAuth cannot create Access apps). Or create apps in Zero Trust dashboard: allow `AUTH_ALLOWED_EMAILS`, set `CF_ACCESS_AUD`, bypass `/t/*`, `/internal/*`, and the Gmail OAuth callback. Or set `AUTH_MODE=hosted` for in-app Google/email sign-in.
-4. Dashboard → **Settings → Sending Accounts → Connect Google**.
+4. Dashboard → **Settings → Sending Accounts → Connect Google**. Cloudflare Email: see [Cloudflare Email Sending](#cf-email) (`FEATURE_CF_EMAIL=1`).
 
 ## Verify
 

@@ -10,7 +10,14 @@ export default function AccountsPage() {
   const [busy, setBusy] = useState(false);
   const [showSMTP, setShowSMTP] = useState(false);
   const [showResend, setShowResend] = useState(false);
+  const [showCF, setShowCF] = useState(false);
   const [resend, setResend] = useState({ email: "", api_key: "", daily_limit: "50" });
+  const [cfEmail, setCfEmail] = useState({
+    email: "",
+    api_token: "",
+    account_id: "",
+    daily_limit: "50",
+  });
   const [smtp, setSmtp] = useState({
     email: "",
     smtp_host: "",
@@ -32,6 +39,11 @@ export default function AccountsPage() {
     setSearchParams(next, { replace: true });
   }, [connected, searchParams, setSearchParams]);
 
+  async function reloadAccounts() {
+    const data = await api.listAccounts();
+    setAccounts(asArray(data, "accounts"));
+  }
+
   useEffect(() => {
     Promise.all([api.listAccounts(), api.capabilities().catch(() => null)])
       .then(([data, c]) => {
@@ -50,8 +62,7 @@ export default function AccountsPage() {
         window.location.href = res.authorize_url;
         return;
       }
-      const data = await api.listAccounts();
-      setAccounts(asArray(data, "accounts"));
+      await reloadAccounts();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -96,8 +107,7 @@ export default function AccountsPage() {
         imap_tls_mode: "tls",
       });
       setShowSMTP(false);
-      const data = await api.listAccounts();
-      setAccounts(asArray(data, "accounts"));
+      await reloadAccounts();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -116,8 +126,44 @@ export default function AccountsPage() {
         daily_limit: Number(resend.daily_limit) || 50,
       });
       setShowResend(false);
-      const data = await api.listAccounts();
-      setAccounts(asArray(data, "accounts"));
+      await reloadAccounts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onAddCFEmail(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.addCFEmailAccount({
+        email: cfEmail.email,
+        api_token: cfEmail.api_token,
+        account_id: cfEmail.account_id,
+        daily_limit: Number(cfEmail.daily_limit) || 50,
+      });
+      setShowCF(false);
+      await reloadAccounts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleAccount(a: Account) {
+    setBusy(true);
+    setError(null);
+    try {
+      if (a.status === "paused") {
+        await api.resumeAccount(a.id);
+      } else {
+        await api.pauseAccount(a.id);
+      }
+      await reloadAccounts();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -150,10 +196,17 @@ export default function AccountsPage() {
               Add Resend
             </button>
           )}
+          {caps?.sending?.cf_email && (
+            <button type="button" disabled={busy} onClick={() => setShowCF((v) => !v)}>
+              Add Cloudflare Email
+            </button>
+          )}
         </div>
       </div>
       <p className="muted">
-        Connect Gmail, Microsoft 365, SMTP/IMAP, or a send-only API mailer. Domain verification for Resend/SES is DNS at the provider. Warmup is a status badge only — it never sends via Tick.
+        Connect Gmail, Microsoft 365, SMTP/IMAP, or a send-only API mailer. Cloudflare Email uses
+        Email Routing for replies. Domain verification for Resend/SES is DNS at the provider. Warmup
+        is a status badge only — it never sends via Tick.
       </p>
       {connected && (
         <div className="panel" style={{ marginBottom: "1rem" }}>
@@ -211,8 +264,60 @@ export default function AccountsPage() {
               autoComplete="off"
             />
           </label>
+          <label>
+            Daily limit
+            <input value={resend.daily_limit} onChange={(e) => setResend({ ...resend, daily_limit: e.target.value })} />
+          </label>
           <button type="submit" disabled={busy}>
             Save Resend account
+          </button>
+        </form>
+      )}
+      {showCF && (
+        <form className="panel form-grid" onSubmit={(e) => void onAddCFEmail(e)} style={{ marginBottom: "1rem" }}>
+          <h3 style={{ marginTop: 0 }}>Cloudflare Email Sending</h3>
+          <p className="muted">
+            Transactional Email Service (not Instantly). Requires Workers Paid to send to arbitrary
+            recipients. Route inbound mail for this domain to this Worker. SMTP alternative:{" "}
+            <code>smtp.mx.cloudflare.net:465</code> user <code>api_token</code> — still no IMAP;
+            replies stay on Email Routing.
+          </p>
+          <label>
+            From email
+            <input
+              value={cfEmail.email}
+              onChange={(e) => setCfEmail({ ...cfEmail, email: e.target.value })}
+              required
+            />
+          </label>
+          <label>
+            Cloudflare account ID
+            <input
+              value={cfEmail.account_id}
+              onChange={(e) => setCfEmail({ ...cfEmail, account_id: e.target.value })}
+              required
+              autoComplete="off"
+            />
+          </label>
+          <label>
+            API token
+            <input
+              type="password"
+              value={cfEmail.api_token}
+              onChange={(e) => setCfEmail({ ...cfEmail, api_token: e.target.value })}
+              required
+              autoComplete="off"
+            />
+          </label>
+          <label>
+            Daily limit
+            <input
+              value={cfEmail.daily_limit}
+              onChange={(e) => setCfEmail({ ...cfEmail, daily_limit: e.target.value })}
+            />
+          </label>
+          <button type="submit" disabled={busy}>
+            Save Cloudflare Email account
           </button>
         </form>
       )}
@@ -226,13 +331,15 @@ export default function AccountsPage() {
             <th>Domain</th>
             <th>Warmup</th>
             <th>Daily limit</th>
+            <th />
           </tr>
         </thead>
         <tbody>
           {accounts.length === 0 ? (
             <tr>
-              <td colSpan={7} className="muted">
-                No accounts connected.
+              <td colSpan={8} className="muted">
+                No accounts connected. Connect Gmail or Microsoft, or add SMTP/IMAP. Cloudflare Email
+                appears when <code>FEATURE_CF_EMAIL=1</code>.
               </td>
             </tr>
           ) : (
@@ -245,6 +352,16 @@ export default function AccountsPage() {
                 <td>{a.domain_verification || "—"}</td>
                 <td>{a.warmup_status && a.warmup_status !== "unset" ? a.warmup_status : "—"}</td>
                 <td>{a.daily_limit ?? "—"}</td>
+                <td className="row-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() => void toggleAccount(a)}
+                  >
+                    {a.status === "paused" ? "Resume" : "Pause"}
+                  </button>
+                </td>
               </tr>
             ))
           )}

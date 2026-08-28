@@ -66,7 +66,7 @@ export default function LeadsPage() {
           {leads.length === 0 ? (
             <tr>
               <td colSpan={5} className="muted">
-                No leads.
+                No leads. Import CSV on a campaign, or use Sheets / Apollo / Clay ingest.
               </td>
             </tr>
           ) : (

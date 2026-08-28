@@ -63,6 +63,9 @@
       },
       "AUTH_ALLOWED_EMAILS": {
         "description": "Comma-separated allowlist. Access policy (default) and Better Auth signup (hosted)."
+      },
+      "FEATURE_CF_EMAIL": {
+        "description": "Optional. Set to `1` to enable Cloudflare Email Sending accounts (transactional; needs Email Routing to this Worker for replies)."
       }
     }
   },

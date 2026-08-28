@@ -47,6 +47,8 @@ Do not configure a stdio `cold-cli` MCP as a send path. Create ≠ send still ap
 | Tool | Notes |
 |------|--------|
 | outreach_list_accounts | |
+| outreach_add_cf_email_account | Vaulted API token; `FEATURE_CF_EMAIL` |
+| outreach_pause_account / resume | Tick will not send while paused |
 | outreach_get_account_status | |
 | outreach_create_campaign | **draft only — does not send** |
 | outreach_update_campaign | |
