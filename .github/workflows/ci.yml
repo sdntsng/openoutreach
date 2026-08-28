@@ -45,4 +45,6 @@ jobs:
           cache: npm
           cache-dependency-path: worker/package-lock.json
       - run: npm install --legacy-peer-deps
+      - name: Stub container env for typecheck
+        run: test -f src/container-env.ts || cp src/container-env.example.ts src/container-env.ts
       - run: npx tsc --noEmit

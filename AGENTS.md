@@ -70,7 +70,7 @@ Nav IA: Overview, Campaigns, Inbox, Leads, Sending Accounts, Settings.
 ```bash
 go test ./internal/hosted/ ./pkg/engine/ ./internal/ ./cmd/...
 cd web && npm run build
-cd worker && npm install --legacy-peer-deps && npx tsc --noEmit
+cd worker && npm install --legacy-peer-deps && npm run typecheck
 ```
 
 - Real SQLite `:memory:` for behavioral tests; mock only `GWSClient`

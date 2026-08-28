@@ -9,7 +9,8 @@
     "build": "npm run build:web",
     "deploy": "npm run build && wrangler deploy",
     "deploy:cf": "npm run deploy",
-    "types": "wrangler types"
+    "types": "wrangler types",
+    "typecheck": "node -e \"import fs from 'node:fs'; if (!fs.existsSync('src/container-env.ts')) fs.copyFileSync('src/container-env.example.ts','src/container-env.ts')\" && tsc --noEmit"
   },
   "cloudflare": {
     "bindings": {
