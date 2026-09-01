@@ -59,7 +59,35 @@ The script generates missing secrets, uploads them via `wrangler secret put`, bu
 
 Options: `--dry-run`, `--skip-build`, `--no-generate`, `--env-file PATH`.
 
-### B. Deploy to Cloudflare button
+### B. Connect this Git repo to the existing Worker (Workers Builds)
+
+Do **not** use the Deploy button if Worker **`openoutreach`** already exists — that path forks and can create a second Worker. Connect Git to the live Worker instead.
+
+`wrangler.jsonc` `name` is already `openoutreach` (must match the dashboard Worker or the build fails). D1 id `11d7a49f-be02-4c14-b125-fb2172d2ff9c` and `PUBLIC_BASE_URL` (`https://openoutreach.siddhant.site`) stay as they are. `npm run deploy:worker` uses `wrangler deploy --keep-vars` so dashboard secrets and vars are not wiped. Runtime secrets are forwarded into the Container; `container-env.ts` is generated at build time (gitignored) and only needs a boot revision.
+
+This Connect step is a one-time Cloudflare dashboard action (GitHub App install). It cannot be finished from CI or an unauthenticated agent.
+
+1. Open [Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages) → Worker **openoutreach**.
+2. **Settings → Builds → Connect**.
+3. Authorize GitHub and pick **`sdntsng/openoutreach`** (this repo, not a fork).
+4. Build settings:
+
+   | Field | Value |
+   |-------|--------|
+   | Production branch | `main` |
+   | Root directory | `worker` |
+   | Build command | `npm run build` |
+   | Deploy command | `npm run deploy:worker` |
+   | Non-production deploy | leave default (`wrangler versions upload`) — does **not** roll a new Container image |
+   | Watch paths (optional) | include `worker`, `web`, `cmd`, `internal`, `pkg`, `Dockerfile` |
+
+5. Save. Push to `main` (or **Retry** the last commit) to deploy onto the existing Worker + Container.
+
+GitHub Actions `ci.yml` still only tests. After Connect, Workers Builds is the deploy pipeline.
+
+Optional fallback (no dashboard Connect): repo variable `CF_DEPLOY=1` plus secret `CLOUDFLARE_API_TOKEN` (Workers Scripts Edit + Account Containers + D1) enables [`.github/workflows/deploy-cf.yml`](../.github/workflows/deploy-cf.yml). Prefer Workers Builds when the Worker already exists.
+
+### C. Deploy to Cloudflare button (new accounts only)
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sdntsng/openoutreach&dir=worker)
 
@@ -67,12 +95,12 @@ During setup:
 
 - **Root directory:** `worker`
 - **Build command:** `npm run build`
-- **Deploy command:** `npm run deploy`
+- **Deploy command:** `npm run deploy:worker`
 - Enter secrets when prompted (descriptions come from `worker/package.json` → `cloudflare.bindings`)
 
-The button forks the repo and configures Workers Builds CI. Use the CLI script if you deploy from this repo without forking.
+The button forks the repo and configures Workers Builds CI. Skip this if you already have Worker `openoutreach`.
 
-### C. Manual wrangler
+### D. Manual wrangler
 
 ```bash
 cd worker
@@ -91,7 +119,7 @@ echo -n "$PUBLIC_BASE_URL" | npx wrangler secret put PUBLIC_BASE_URL
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 
-npx wrangler deploy
+npx wrangler deploy --keep-vars
 ```
 
 Container receives runtime env forwarded from Worker secrets on start (`COLD_CLI_DATABASE_URL`, encryption key, Google client, internal token, `PUBLIC_BASE_URL`, etc.).

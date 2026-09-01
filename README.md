@@ -54,9 +54,19 @@ Dashboard: `cd web && npm install && npm run dev` (proxies `/api` or point Vite 
 
 ## Deploy to Cloudflare
 
+**Existing Worker `openoutreach`:** connect this repo in the dashboard. Do **not** use the Deploy button — it can fork and create a second Worker.
+
+1. [Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages) → **openoutreach** → **Settings → Builds → Connect**
+2. GitHub repo **`sdntsng/openoutreach`**, production branch `main`, root directory `worker`
+3. Build `npm run build` · deploy `npm run deploy:worker`
+
+That deploys onto the live Worker + D1 (`openoutreach.siddhant.site`). Details: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) §B.
+
+**New Cloudflare account only:**
+
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sdntsng/openoutreach&dir=worker)
 
-**CLI (recommended for this repo):**
+**CLI:**
 
 ```bash
 cp .env.deploy.example .env.deploy

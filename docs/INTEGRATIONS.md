@@ -282,14 +282,15 @@ Small follow-ups that fit the existing engine. Do not revisit Instantly-as-send-
 
 Already shipped:
 
-- [Deploy to Cloudflare](https://deploy.workers.cloudflare.com/?url=https://github.com/sdntsng/openoutreach&dir=worker) button (fork + Workers Builds)
+- [Deploy to Cloudflare](https://deploy.workers.cloudflare.com/?url=https://github.com/sdntsng/openoutreach&dir=worker) button (new accounts only — forks + new Worker)
+- Connect Git on the existing Worker: dashboard **Settings → Builds → Connect** → `sdntsng/openoutreach` (see [DEPLOYMENT.md](DEPLOYMENT.md) §B)
 - `./scripts/deploy-cf.sh` (D1 default, secrets, container env, wrangler deploy)
 - D1 as default storage (no Neon/Supabase required)
 
 Worth adding later, in this order:
 
 1. **`FEATURE_*` kill-switches** — Resend / CF Email / Hunter / warmup now **default on**. Set `FEATURE_*=0` only to hide a form. Vault credentials are still the real switch.
-2. **Workers Builds on `dev`** (staging) — GitHub Action `workflow_dispatch` + `CLOUDFLARE_API_TOKEN`; do **not** auto-deploy `main` without an explicit production go-ahead.
+2. **Workers Builds on `dev`** (staging) — optional GitHub Action `workflow_dispatch` + `CLOUDFLARE_API_TOKEN`; production stays the existing Worker via dashboard Connect.
 3. **Email Sending onboard checklist** in Settings: domain, SPF/DKIM, Routing rule → this Worker, `FEATURE_CF_EMAIL=1`. Still no `send_email` binding until the operator has onboarded Email Sending.
 4. **Access setup script** already exists (`scripts/setup-cf-access.sh`). Surface a Settings copy-paste of bypass paths (`/t/*`, `/internal/*`, OAuth callbacks, Clay ingest).
 5. Skip Railway/Fly/Heroku one-click unless someone is not on Cloudflare — the product's tick lock and Worker cron assume this topology.

@@ -7,10 +7,11 @@
     "dev": "wrangler dev",
     "build:web": "npm ci --prefix ../web && npm run build --prefix ../web",
     "build": "npm run build:web",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "npm run build && npm run deploy:worker",
+    "deploy:worker": "node scripts/ensure-container-env.mjs && wrangler deploy --keep-vars",
     "deploy:cf": "npm run deploy",
     "types": "wrangler types",
-    "typecheck": "node -e \"import fs from 'node:fs'; if (!fs.existsSync('src/container-env.ts')) fs.copyFileSync('src/container-env.example.ts','src/container-env.ts')\" && tsc --noEmit"
+    "typecheck": "node scripts/ensure-container-env.mjs && tsc --noEmit"
   },
   "cloudflare": {
     "bindings": {

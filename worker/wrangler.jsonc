@@ -1,5 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
+  // Must match the existing Cloudflare Worker. Connecting Git (Settings → Builds)
+  // fails if this name differs from the dashboard Worker.
   "name": "openoutreach",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-20",
