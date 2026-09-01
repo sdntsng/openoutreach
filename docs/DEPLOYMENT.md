@@ -231,6 +231,7 @@ When `CF_ACCESS_AUD` is set, the Worker also rejects requests that lack `Cf-Acce
 | Symptom | Likely cause |
 |---------|----------------|
 | Deploy fails on missing secrets | Run `./scripts/deploy-cf.sh` or set all `secrets.required` in wrangler |
+| API / dashboard **HTTP 500** after Workers Builds | Container started without D1/env — Worker must forward secrets onto `envVars` before `startAndWaitForPorts` (empty `container-env.ts` is expected). Retry after that deploy; check Container logs for `COLD_CLI_DATABASE_URL` / `OPENOUTREACH_D1_PROXY` |
 | Health check 502 / timeout | Container cold start (~10–30s after idle); retry |
 | Tick returns `{status:"locked"}` | Normal — another tick holds the advisory lock |
 | OAuth redirect mismatch | Fix Google console URI + `PUBLIC_BASE_URL` |
