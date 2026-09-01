@@ -224,6 +224,11 @@ APP_SPECS = [
         f"{HOST}/api/v1/accounts/google/oauth/callback",
         "bypass",
     ),
+    (
+        "OpenOutreach bypass Microsoft OAuth",
+        f"{HOST}/api/v1/accounts/microsoft/oauth/callback",
+        "bypass",
+    ),
 ]
 
 print(f"==> Account {ACCOUNT}")

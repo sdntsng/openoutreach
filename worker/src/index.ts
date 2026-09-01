@@ -30,6 +30,21 @@ export interface Env {
   AUTH_MODE?: string;
   POLICY_AUD?: string;
   TEAM_DOMAIN?: string;
+  MICROSOFT_CLIENT_ID?: string;
+  MICROSOFT_CLIENT_SECRET?: string;
+  MICROSOFT_TENANT_ID?: string;
+  FEATURE_GMAIL?: string;
+  FEATURE_MICROSOFT?: string;
+  FEATURE_SMTP_IMAP?: string;
+  FEATURE_APOLLO?: string;
+  FEATURE_CLAY?: string;
+  FEATURE_WEBHOOK?: string;
+  FEATURE_SHEETS?: string;
+  FEATURE_RESEND?: string;
+  FEATURE_SES?: string;
+  FEATURE_CF_EMAIL?: string;
+  FEATURE_WARMUP?: string;
+  FEATURE_HUNTER?: string;
 }
 
 export class OutreachContainer extends Container<Env> {
@@ -63,6 +78,23 @@ export class OutreachContainer extends Container<Env> {
       ["TRACKING_HMAC_SECRET", "TRACKING_HMAC_SECRET"],
       ["GOOGLE_REDIRECT_URL", "GOOGLE_REDIRECT_URL"],
       ["OPENOUTREACH_WORKSPACE_ID", "OPENOUTREACH_WORKSPACE_ID"],
+      ["AUTH_MODE", "AUTH_MODE"],
+      ["MCP_BEARER_TOKEN", "MCP_BEARER_TOKEN"],
+      ["MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_ID"],
+      ["MICROSOFT_CLIENT_SECRET", "MICROSOFT_CLIENT_SECRET"],
+      ["MICROSOFT_TENANT_ID", "MICROSOFT_TENANT_ID"],
+      ["FEATURE_GMAIL", "FEATURE_GMAIL"],
+      ["FEATURE_MICROSOFT", "FEATURE_MICROSOFT"],
+      ["FEATURE_SMTP_IMAP", "FEATURE_SMTP_IMAP"],
+      ["FEATURE_APOLLO", "FEATURE_APOLLO"],
+      ["FEATURE_CLAY", "FEATURE_CLAY"],
+      ["FEATURE_WEBHOOK", "FEATURE_WEBHOOK"],
+      ["FEATURE_SHEETS", "FEATURE_SHEETS"],
+      ["FEATURE_RESEND", "FEATURE_RESEND"],
+      ["FEATURE_SES", "FEATURE_SES"],
+      ["FEATURE_CF_EMAIL", "FEATURE_CF_EMAIL"],
+      ["FEATURE_WARMUP", "FEATURE_WARMUP"],
+      ["FEATURE_HUNTER", "FEATURE_HUNTER"],
     ];
     for (const [from, to] of map) {
       const v = e[from];
@@ -146,6 +178,9 @@ function isPublicPath(pathname: string, mode: AuthMode): boolean {
   if (pathname.startsWith("/t/")) return true;
   if (pathname === "/oauth/google/callback" || pathname.startsWith("/oauth/google/")) return true;
   if (pathname.startsWith("/api/v1/accounts/google/oauth/callback")) return true;
+  if (pathname.startsWith("/api/v1/accounts/microsoft/oauth/callback")) return true;
+  if (pathname.match(/^\/api\/v1\/integrations\/[^/]+\/ingest$/)) return true;
+  if (pathname.startsWith("/api/v1/integrations/resend/events")) return true;
   if (pathname === "/api/auth/whoami") return true;
   if (mode === "hosted") {
     return pathname.startsWith("/api/auth") || pathname === "/sign-in" || pathname === "/sign-up";
@@ -435,5 +470,37 @@ export default {
         body: "{}",
       }),
     );
+  },
+
+  /**
+   * Cloudflare Email Routing → Worker. Do not add a wrangler send_email binding
+   * by default (deploy breaks until Email Sending is onboarded). Inbound only.
+   */
+  async email(
+    message: { from: string; to: string; raw: ReadableStream },
+    env: Env,
+  ): Promise<void> {
+    const raw = await new Response(message.raw).text();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    };
+    if (env.INTERNAL_CONTAINER_TOKEN) {
+      headers["X-Internal-Token"] = env.INTERNAL_CONTAINER_TOKEN;
+    }
+    try {
+      const res = await containerStub(env).fetch(
+        new Request("http://container/api/v1/integrations/cf-email/inbound", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ from: message.from, to: message.to, raw }),
+        }),
+      );
+      if (!res.ok) {
+        console.error("cf-email inbound failed", res.status, await res.text());
+      }
+    } catch (err) {
+      console.error("cf-email inbound error", err);
+    }
   },
 };

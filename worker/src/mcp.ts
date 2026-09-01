@@ -44,6 +44,60 @@ const TOOLS: ToolDef[] = [
     call: () => ({ method: "GET", path: "/api/v1/accounts" }),
   },
   {
+    name: "outreach_add_cf_email_account",
+    description:
+      "Add a Cloudflare Email Sending account (FEATURE_CF_EMAIL). API token is vaulted and never returned. Transactional send; replies need Email Routing to this Worker. Does not send campaign mail.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        email: { type: "string", description: "From address on a domain onboarded to Cloudflare Email Sending" },
+        api_token: { type: "string", description: "Cloudflare API token with Email Sending Edit" },
+        account_id: { type: "string", description: "Cloudflare account id" },
+        daily_limit: { type: "number" },
+      },
+      required: ["email", "api_token", "account_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: "/api/v1/accounts/cf-email",
+      body: {
+        email: a.email,
+        api_token: a.api_token,
+        account_id: a.account_id,
+        daily_limit: a.daily_limit,
+      },
+    }),
+  },
+  {
+    name: "outreach_pause_account",
+    description: "Pause a sending account so tick will not send from it.",
+    inputSchema: {
+      type: "object",
+      properties: { account_id: { type: "string" } },
+      required: ["account_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/accounts/${enc(a.account_id)}/pause`,
+    }),
+  },
+  {
+    name: "outreach_resume_account",
+    description: "Resume a paused sending account.",
+    inputSchema: {
+      type: "object",
+      properties: { account_id: { type: "string" } },
+      required: ["account_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/accounts/${enc(a.account_id)}/resume`,
+    }),
+  },
+  {
     name: "outreach_get_account_status",
     description: "Get status for one sending account (active, paused, reconnect_required).",
     inputSchema: {
@@ -327,40 +381,78 @@ const TOOLS: ToolDef[] = [
   {
     name: "outreach_reply_to_thread",
     description:
-      "Send a human/agent reply on an existing outreach thread (preserves Gmail threading). Consequential: sends email.",
+      "Send a reply on an existing thread. Consequential: requires confirm=true and confirm_to matching the recipient. Unsubscribe/blacklist leads are refused.",
     inputSchema: {
       type: "object",
       properties: {
-        thread_id: { type: "string" },
+        campaign_id: { type: "string" },
+        lead_id: { type: "string" },
         body: { type: "string" },
-        subject: { type: "string" },
+        confirm_to: { type: "string" },
+        confirm: { type: "boolean" },
       },
-      required: ["thread_id", "body"],
+      required: ["campaign_id", "lead_id", "body"],
       additionalProperties: false,
     },
     call: (a) => ({
       method: "POST",
-      path: `/api/v1/threads/${enc(a.thread_id)}/reply`,
-      body: { body: a.body, subject: a.subject },
+      path: `/api/v1/threads/${enc(a.campaign_id)}/${enc(a.lead_id)}/reply`,
+      body: {
+        body: a.body,
+        confirm_to: a.confirm_to,
+        send: a.confirm === true,
+        confirm: a.confirm === true,
+      },
     }),
   },
   {
     name: "outreach_search_leads",
-    description: "Search leads by email, name, company, or domain.",
+    description:
+      "Search workspace leads, or connector-backed people search when provider is set (apollo). Connector search is preview-only.",
     inputSchema: {
       type: "object",
       properties: {
         q: { type: "string" },
+        query: { type: "string" },
         limit: { type: "number" },
+        provider: { type: "string" },
+        credential_name: { type: "string" },
       },
-      required: ["q"],
       additionalProperties: false,
     },
     call: (a) => {
-      const params = new URLSearchParams({ q: String(a.q) });
+      const q = String(a.q ?? a.query ?? "");
+      if (a.provider) {
+        return {
+          method: "POST",
+          path: "/api/v1/integrations/search",
+          body: {
+            provider: a.provider,
+            q,
+            limit: a.limit,
+            credential_name: a.credential_name,
+          },
+        };
+      }
+      const params = new URLSearchParams({ q });
       if (a.limit != null) params.set("limit", String(a.limit));
       return { method: "GET", path: `/api/v1/leads?${params}` };
     },
+  },
+  {
+    name: "outreach_enrich_lead",
+    description: "Enrich a lead by email via stored connector credentials (preview only).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        email: { type: "string" },
+        provider: { type: "string" },
+        credential_name: { type: "string" },
+      },
+      required: ["email"],
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/integrations/enrich", body: a }),
   },
   {
     name: "outreach_blacklist_lead",
@@ -388,6 +480,232 @@ const TOOLS: ToolDef[] = [
         body: { email: a.email, domain: a.domain },
       };
     },
+  },
+  {
+    name: "outreach_list_capabilities",
+    description: "List operator-enabled send/integration features for this instance (no secrets).",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    call: () => ({ method: "GET", path: "/api/v1/settings/capabilities" }),
+  },
+  {
+    name: "outreach_list_integrations",
+    description: "List workspace integration credentials (masked). Never returns full secrets.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    call: () => ({ method: "GET", path: "/api/v1/integrations" }),
+  },
+  {
+    name: "outreach_test_integration",
+    description: "Test an integration credential by id without returning the secret.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "number" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/integrations/${enc(a.id)}/test`,
+      body: {},
+    }),
+  },
+  {
+    name: "outreach_put_integration",
+    description:
+      "Create or rotate a workspace integration credential (Apollo, Clay, webhook, warmup, etc.). Never returns the secret.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        provider: { type: "string" },
+        name: { type: "string" },
+        secret: { type: "string" },
+        metadata: { type: "string" },
+      },
+      required: ["provider", "secret"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: "/api/v1/integrations",
+      body: {
+        provider: a.provider,
+        name: a.name || "default",
+        secret: a.secret,
+        metadata: a.metadata,
+      },
+    }),
+  },
+  {
+    name: "outreach_delete_integration",
+    description: "Delete a workspace integration credential by id. Never returns secrets.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "number" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "DELETE",
+      path: `/api/v1/integrations/${enc(a.id)}`,
+    }),
+  },
+  {
+    name: "outreach_apollo_search",
+    description:
+      "Search Apollo people using a stored apollo credential (preview only). Import via outreach_add_leads; never auto-activates.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        credential_name: { type: "string" },
+        q_keywords: { type: "string" },
+        person_titles: { type: "array", items: { type: "string" } },
+        per_page: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/integrations/apollo/search", body: a }),
+  },
+  {
+    name: "outreach_sheets_import",
+    description:
+      "Import leads from a public Google Sheets (or CSV) URL. Preview without campaign_id; append with campaign_id. Does not activate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        campaign_id: { type: "number" },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/integrations/sheets/import", body: a }),
+  },
+  {
+    name: "outreach_import_leads",
+    description: "Import CSV leads into a draft campaign. Does not activate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string" },
+        csv: { type: "string" },
+        dry_run: { type: "boolean" },
+        confirm: { type: "boolean" },
+      },
+      required: ["campaign_id", "csv"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/campaigns/${enc(a.campaign_id)}/leads`,
+      body: { csv: a.csv, dry_run: a.dry_run === true, confirm: a.confirm === true },
+    }),
+  },
+  {
+    name: "outreach_draft_sequence",
+    description: "Draft sequence YAML from ICP/offer. Draft only — never activates.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        icp: { type: "string" },
+        offer: { type: "string" },
+        tone: { type: "string" },
+        step_count: { type: "number" },
+        from_name: { type: "string" },
+        campaign_id: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/agent/draft-sequence", body: a }),
+  },
+  {
+    name: "outreach_preflight_campaign",
+    description: "Non-mutating deliverability/readiness checks before activate.",
+    inputSchema: {
+      type: "object",
+      properties: { campaign_id: { type: "string" } },
+      required: ["campaign_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "GET",
+      path: `/api/v1/campaigns/${enc(a.campaign_id)}/preflight`,
+    }),
+  },
+  {
+    name: "outreach_suggest_reply",
+    description: "Suggest a reply body from classification. Sending still requires confirm on reply tool.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string" },
+        lead_id: { type: "string" },
+      },
+      required: ["campaign_id", "lead_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "GET",
+      path: `/api/v1/threads/${enc(a.campaign_id)}/${enc(a.lead_id)}/suggest-reply`,
+    }),
+  },
+  {
+    name: "outreach_setup",
+    description: "First-run checklist: account/campaign/lead counts and next actions. Does not send.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    call: () => ({ method: "GET", path: "/api/v1/setup" }),
+  },
+  {
+    name: "outreach_clone_campaign",
+    description: "Clone a campaign as a new draft (never activates). Copies leads unless leads_csv is provided.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string" },
+        name: { type: "string" },
+        leads_csv: { type: "string" },
+      },
+      required: ["campaign_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/campaigns/${enc(a.campaign_id)}/clone`,
+      body: { name: a.name, leads_csv: a.leads_csv },
+    }),
+  },
+  {
+    name: "outreach_list_suppressions",
+    description: "List workspace suppression emails/domains.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    call: () => ({ method: "GET", path: "/api/v1/suppressions" }),
+  },
+  {
+    name: "outreach_add_suppression",
+    description: "Add an email or domain to the global suppression list. Honored on future imports. Does not send.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        email: { type: "string" },
+        domain: { type: "string" },
+        kind: { type: "string" },
+        value: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/suppressions", body: a }),
+  },
+  {
+    name: "outreach_verify_leads",
+    description: "Syntax + MX + disposable check. No third-party API key.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        emails: { type: "array", items: { type: "string" } },
+        csv: { type: "string" },
+        email: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/leads/verify", body: a }),
   },
 ];
 
@@ -495,6 +813,20 @@ async function toolsCall(
   if (!tool) {
     return {
       content: [{ type: "text", text: JSON.stringify({ error: `unknown tool: ${name}` }) }],
+      isError: true,
+    };
+  }
+  if (name === "outreach_reply_to_thread" && args.confirm !== true) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            error: "reply_not_confirmed",
+            message: "Set confirm=true and confirm_to after explicit human approval. Suggestion tools never send.",
+          }),
+        },
+      ],
       isError: true,
     };
   }

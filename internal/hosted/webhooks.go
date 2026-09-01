@@ -1,0 +1,417 @@
+package hosted
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/andersmyrmel/cold-cli/internal"
+)
+
+func (s *Server) handleWebhookIngest(w http.ResponseWriter, r *http.Request) {
+	caps := BuildCapabilities(s.WorkspaceID, s.PublicBaseURL, s.encKey() != nil, s.OAuth != nil)
+	provider := strings.ToLower(r.PathValue("provider"))
+	if provider == "" {
+		provider = "generic"
+	}
+	if provider == "clay" && !caps.Integrations["clay"] {
+		writeErr(w, http.StatusForbidden, "feature_disabled", "FEATURE_CLAY is disabled")
+		return
+	}
+	if provider != "clay" && !caps.Integrations["webhook"] {
+		writeErr(w, http.StatusForbidden, "feature_disabled", "FEATURE_WEBHOOK is disabled")
+		return
+	}
+
+	ws := s.workspaceFromRequest(r)
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		name = "default"
+	}
+	campaignID, _ := strconv.ParseInt(r.URL.Query().Get("campaign_id"), 10, 64)
+	campaignName := strings.TrimSpace(r.URL.Query().Get("campaign_name"))
+	createCampaign := queryTruthy(r.URL.Query().Get("create_campaign")) || queryTruthy(r.URL.Query().Get("create_if_missing"))
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "read_failed", err.Error())
+		return
+	}
+
+	bodyID, bodyName, bodyCreate := webhookCampaignHint(body)
+	if campaignID == 0 {
+		campaignID = bodyID
+	}
+	if campaignName == "" {
+		campaignName = bodyName
+	}
+	createCampaign = createCampaign || bodyCreate
+
+	key := s.encKey()
+	if key != nil {
+		var encSecret string
+		var storedCampaign sql.NullInt64
+		qerr := queryRow(s.Store.DB, `
+			SELECT encrypted_hmac_secret, campaign_id FROM webhook_endpoints
+			WHERE workspace_id = ? AND provider = ? AND name = ? AND status = 'active'`,
+			ws, provider, name).Scan(&encSecret, &storedCampaign)
+		if qerr == nil && encSecret != "" {
+			plain, derr := Decrypt(key, encSecret)
+			if derr == nil && len(plain) > 0 {
+				sig := r.Header.Get("X-OpenOutreach-Signature")
+				if sig == "" {
+					sig = r.Header.Get("X-Clay-Signature")
+				}
+				mac := hmac.New(sha256.New, plain)
+				mac.Write(body)
+				expected := hex.EncodeToString(mac.Sum(nil))
+				if !hmac.Equal([]byte(strings.TrimPrefix(strings.ToLower(sig), "sha256=")), []byte(expected)) {
+					writeErr(w, http.StatusUnauthorized, "bad_signature", "HMAC signature mismatch")
+					return
+				}
+			}
+			if campaignID == 0 && storedCampaign.Valid {
+				campaignID = storedCampaign.Int64
+			}
+		}
+	}
+
+	leads, warnings := normalizeWebhookLeads(body)
+	campaignID, campaignName, campaignStatus, created, previewNote, resolveErr := s.resolveIngestCampaign(ws, campaignID, campaignName, createCampaign)
+	if resolveErr != nil {
+		writeErr(w, http.StatusBadRequest, "campaign_resolve_failed", resolveErr.Error())
+		return
+	}
+	if campaignID == 0 {
+		msg := previewNote
+		if msg == "" {
+			msg = "pass campaign_id or campaign_name to append; preview only"
+		}
+		writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+			"preview": true, "leads": leads, "count": len(leads), "csv": leadsToCSV(leads),
+		}, Warnings: append(warnings, msg)})
+		return
+	}
+	if created {
+		warnings = append(warnings, "created draft campaign; not activated")
+	}
+
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idem == "" {
+		idem = strings.TrimSpace(r.Header.Get("X-Idempotency-Key"))
+	}
+	if idem != "" {
+		_, ierr := exec(s.Store.DB, `
+			INSERT INTO webhook_idempotency (workspace_id, provider, idempotency_key)
+			VALUES (?, ?, ?)`, ws, provider, idem)
+		if ierr != nil {
+			writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+				"duplicate": true, "idempotency_key": idem, "campaign_id": campaignID,
+			}, Warnings: []string{"idempotent replay; leads not re-imported"}})
+			return
+		}
+	}
+
+	out := map[string]any{
+		"campaign_id": campaignID, "campaign_name": campaignName, "status": campaignStatus,
+		"campaign_created": created, "count": len(leads),
+	}
+	if len(leads) > 0 {
+		res, extra, err := s.ingestLeadsForCampaign(campaignID, campaignName, leadsToCSV(leads))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "import_failed", err.Error())
+			return
+		}
+		out["imported"] = res
+		warnings = append(warnings, extra...)
+		_ = LogEnrichmentCall(s.Store.DB, ws, provider, "ingest", fmt.Sprintf("campaign=%d n=%d", campaignID, len(leads)), float64(len(leads)))
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: out, Warnings: warnings})
+}
+
+func (s *Server) resolveIngestCampaign(ws string, campaignID int64, campaignName string, create bool) (int64, string, string, bool, string, error) {
+	ws = strings.TrimSpace(ws)
+	if ws == "" {
+		ws = "default"
+	}
+	if campaignID > 0 {
+		var n, status string
+		err := queryRow(s.Store.DB, `SELECT name, status FROM campaigns WHERE id = ? AND workspace_id = ?`, campaignID, ws).Scan(&n, &status)
+		if err != nil {
+			return 0, "", "", false, "", fmt.Errorf("campaign_id not found")
+		}
+		return campaignID, n, status, false, "", nil
+	}
+	campaignName = strings.TrimSpace(campaignName)
+	if campaignName == "" {
+		return 0, "", "", false, "pass campaign_id or campaign_name to append; preview only", nil
+	}
+	var existingID int64
+	var existingStatus string
+	err := queryRow(s.Store.DB, `SELECT id, status FROM campaigns WHERE workspace_id = ? AND name = ?`, ws, campaignName).Scan(&existingID, &existingStatus)
+	if err == nil {
+		return existingID, campaignName, existingStatus, false, "", nil
+	}
+	if !create {
+		return 0, "", "", false, "campaign not found; pass create_campaign to open a draft (never activates)", nil
+	}
+	var email string
+	if qerr := queryRow(s.Store.DB, `SELECT email FROM accounts WHERE workspace_id = ? AND status = 'active' ORDER BY id LIMIT 1`, ws).Scan(&email); qerr != nil {
+		return 0, "", "", false, "", fmt.Errorf("at least one active sending account is required to create a draft campaign")
+	}
+	res, err := internal.CreateDraftCampaign(s.Store.DB, internal.CreateDraftCampaignOpts{
+		WorkspaceID:   ws,
+		Name:          campaignName,
+		AccountEmails: []string{email},
+	})
+	if err != nil {
+		var retryID int64
+		var retryStatus string
+		if qerr := queryRow(s.Store.DB, `SELECT id, status FROM campaigns WHERE workspace_id = ? AND name = ?`, ws, campaignName).Scan(&retryID, &retryStatus); qerr == nil {
+			return retryID, campaignName, retryStatus, false, "", nil
+		}
+		return 0, "", "", false, "", err
+	}
+	return res.ID, res.Name, "draft", true, "", nil
+}
+
+func (s *Server) ingestLeadsForCampaign(campaignID int64, campaignName, csvData string) (any, []string, error) {
+	var seqContent string
+	_ = queryRow(s.Store.DB, `SELECT COALESCE(sequence_content, '') FROM campaigns WHERE id = ?`, campaignID).Scan(&seqContent)
+	if strings.TrimSpace(seqContent) != "" {
+		res, err := internal.AddLeadsToCampaign(s.Store.DB, campaignName, "", csvData)
+		return res, nil, err
+	}
+	records, parseWarnings, err := internal.ParseLeadsCSVFromReader(strings.NewReader(csvData))
+	if err != nil {
+		return nil, parseWarnings, err
+	}
+	added, skipped, err := s.attachDraftLeads(campaignID, records)
+	if err != nil {
+		return nil, parseWarnings, err
+	}
+	return map[string]any{
+		"campaign":        campaignName,
+		"leads_added":     added,
+		"leads_skipped":   skipped,
+		"scheduled_sends": 0,
+	}, append(parseWarnings, "draft has no sequence; leads attached without scheduled_sends"), nil
+}
+
+func (s *Server) attachDraftLeads(campaignID int64, records []internal.LeadRecord) (added, skipped int, err error) {
+	for _, rec := range records {
+		email := strings.ToLower(strings.TrimSpace(rec.Fields["email"]))
+		if email == "" || !strings.Contains(email, "@") {
+			skipped++
+			continue
+		}
+		customJSON := internal.BuildCustomFieldsJSON(rec.Fields)
+		domain := internal.ExtractDomain(email)
+		if _, err := exec(s.Store.DB, `INSERT INTO leads (email, first_name, last_name, company, domain, custom_fields)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(email) DO NOTHING`,
+			email, rec.Fields["first_name"], rec.Fields["last_name"], rec.Fields["company"], domain, customJSON); err != nil {
+			return added, skipped, err
+		}
+		_, _ = exec(s.Store.DB, `UPDATE leads SET first_name = ?, last_name = ?, company = ?, domain = ?, custom_fields = ?
+			WHERE email = ?`, rec.Fields["first_name"], rec.Fields["last_name"], rec.Fields["company"], domain, customJSON, email)
+		var leadID int64
+		var globalStatus string
+		if err := queryRow(s.Store.DB, `SELECT id, global_status FROM leads WHERE email = ?`, email).Scan(&leadID, &globalStatus); err != nil {
+			return added, skipped, err
+		}
+		if globalStatus == "blacklisted" || globalStatus == "bounced" {
+			skipped++
+			continue
+		}
+		var existing int
+		if err := queryRow(s.Store.DB, `SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ? AND lead_id = ?`, campaignID, leadID).Scan(&existing); err != nil {
+			return added, skipped, err
+		}
+		if existing > 0 {
+			skipped++
+			continue
+		}
+		if _, err := exec(s.Store.DB, `INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (?, ?, 'active')`, campaignID, leadID); err != nil {
+			return added, skipped, err
+		}
+		added++
+	}
+	return added, skipped, nil
+}
+
+func webhookCampaignHint(body []byte) (int64, string, bool) {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, "", false
+	}
+	return anyToInt64(raw["campaign_id"]), firstString(raw, "campaign_name"), anyTruthy(raw["create_campaign"]) || anyTruthy(raw["create_if_missing"])
+}
+
+func queryTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func anyTruthy(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return queryTruthy(t)
+	case float64:
+		return t != 0
+	default:
+		return false
+	}
+}
+
+func anyToInt64(v any) int64 {
+	switch t := v.(type) {
+	case float64:
+		return int64(t)
+	case string:
+		n, _ := strconv.ParseInt(strings.TrimSpace(t), 10, 64)
+		return n
+	case json.Number:
+		n, _ := t.Int64()
+		return n
+	default:
+		return 0
+	}
+}
+
+func normalizeWebhookLeads(body []byte) ([]map[string]string, []string) {
+	var warnings []string
+	var raw any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, []string{"invalid json"}
+	}
+	var items []map[string]any
+	switch t := raw.(type) {
+	case map[string]any:
+		if arr, ok := t["leads"].([]any); ok {
+			for _, v := range arr {
+				if m, ok := v.(map[string]any); ok {
+					items = append(items, m)
+				}
+			}
+		} else if arr, ok := t["people"].([]any); ok {
+			for _, v := range arr {
+				if m, ok := v.(map[string]any); ok {
+					items = append(items, m)
+				}
+			}
+		} else {
+			items = append(items, t)
+		}
+	case []any:
+		for _, v := range t {
+			if m, ok := v.(map[string]any); ok {
+				items = append(items, m)
+			}
+		}
+	}
+	out := make([]map[string]string, 0, len(items))
+	for _, m := range items {
+		email := firstString(m, "email", "Email", "work_email")
+		if email == "" || !strings.Contains(email, "@") {
+			warnings = append(warnings, "skipped row without valid email")
+			continue
+		}
+		out = append(out, map[string]string{
+			"email":        strings.ToLower(strings.TrimSpace(email)),
+			"first_name":   firstString(m, "first_name", "firstName", "First Name"),
+			"last_name":    firstString(m, "last_name", "lastName", "Last Name"),
+			"company":      firstString(m, "company", "company_name", "organization"),
+			"domain":       firstString(m, "domain", "company_domain"),
+			"title":        firstString(m, "title", "job_title"),
+			"linkedin_url": firstString(m, "linkedin_url", "linkedin"),
+		})
+	}
+	return out, warnings
+}
+
+func firstString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			switch t := v.(type) {
+			case string:
+				return strings.TrimSpace(t)
+			case float64:
+				return strconv.FormatInt(int64(t), 10)
+			}
+		}
+	}
+	return ""
+}
+
+func (s *Server) handlePutWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
+	key := s.encKey()
+	if key == nil {
+		writeErr(w, http.StatusServiceUnavailable, "vault_unconfigured", "CREDENTIAL_ENCRYPTION_KEY is required")
+		return
+	}
+	body, _ := io.ReadAll(r.Body)
+	var req struct {
+		Provider   string `json:"provider"`
+		Name       string `json:"name"`
+		HMACSecret string `json:"hmac_secret"`
+		CampaignID int64  `json:"campaign_id"`
+		FieldMap   string `json:"field_map"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", "invalid json body")
+		return
+	}
+	if req.Provider == "" {
+		req.Provider = "generic"
+	}
+	if req.Name == "" {
+		req.Name = "default"
+	}
+	if req.FieldMap == "" {
+		req.FieldMap = "{}"
+	}
+	ws := s.workspaceFromRequest(r)
+	enc := ""
+	var err error
+	if strings.TrimSpace(req.HMACSecret) != "" {
+		enc, err = Encrypt(key, []byte(strings.TrimSpace(req.HMACSecret)))
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "encrypt_failed", err.Error())
+			return
+		}
+	}
+	var campaign any
+	if req.CampaignID > 0 {
+		campaign = req.CampaignID
+	}
+	_, err = exec(s.Store.DB, `
+		INSERT INTO webhook_endpoints (workspace_id, provider, name, encrypted_hmac_secret, campaign_id, field_map)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(workspace_id, provider, name) DO UPDATE SET
+			encrypted_hmac_secret = CASE WHEN excluded.encrypted_hmac_secret = '' THEN webhook_endpoints.encrypted_hmac_secret ELSE excluded.encrypted_hmac_secret END,
+			campaign_id = COALESCE(excluded.campaign_id, webhook_endpoints.campaign_id),
+			field_map = excluded.field_map`,
+		ws, strings.ToLower(req.Provider), req.Name, enc, campaign, req.FieldMap)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "put_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+		"provider": req.Provider, "name": req.Name,
+		"ingest_path": fmt.Sprintf("/api/v1/integrations/%s/ingest?name=%s", req.Provider, req.Name),
+	}})
+}

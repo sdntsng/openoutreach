@@ -28,14 +28,17 @@ export default function CampaignsPage() {
             <th>Name</th>
             <th>Status</th>
             <th>Leads</th>
+            <th>Sent</th>
+            <th>Replies</th>
+            <th>Approx. opens</th>
             <th>Created</th>
           </tr>
         </thead>
         <tbody>
           {campaigns.length === 0 ? (
             <tr>
-              <td colSpan={4} className="muted">
-                No campaigns yet.
+              <td colSpan={7} className="muted">
+                No campaigns yet. Create a draft first — activate is a separate, explicit step.
               </td>
             </tr>
           ) : (
@@ -46,6 +49,9 @@ export default function CampaignsPage() {
                 </td>
                 <td>{c.status}</td>
                 <td>{c.leads ?? "—"}</td>
+                <td>{c.sent ?? 0}</td>
+                <td>{c.replies ?? 0}</td>
+                <td>{c.approx_opens ?? 0}</td>
                 <td className="muted">{c.created_at ? new Date(c.created_at).toLocaleString() : "—"}</td>
               </tr>
             ))

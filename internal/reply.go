@@ -98,6 +98,14 @@ func ProcessReplies(db *sql.DB, gws GWSClient, accounts []Account) (replies int,
 	return result.Replies, result.Unsubscribes, nil
 }
 
+// IngestInboundMessage records one inbound message using the same
+// reply / unsubscribe / bounce path as tick inbox polling.
+func IngestInboundMessage(db *sql.DB, account Account, msg GWSMessage) (replyPollResult, error) {
+	return processReplyMessages(db, []Account{account}, func(Account) ([]GWSMessage, error) {
+		return []GWSMessage{msg}, nil
+	})
+}
+
 func processGWSReplyMessages(db *sql.DB, gws GWSClient, accounts []Account) (replyPollResult, error) {
 	return processReplyAccounts(db, accounts, func(account Account, since time.Time) ([]GWSMessage, error) {
 		// Search all mail addressed to this account, not just INBOX. Manual

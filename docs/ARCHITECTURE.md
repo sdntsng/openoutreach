@@ -38,6 +38,8 @@ Cloudflare Container (outreachd :8080)
 
 - `GWSCLI` — subprocess gws (CLI)
 - `GoogleAPIProvider` — Gmail API + vault (hosted)
+- `MicrosoftGraphProvider` — Graph send + poll
+- `APIMailerProvider` — Resend / Cloudflare Email Sending (REST)
 - `MockGmail` — local/dev
 - SMTP/IMAP — unchanged upstream transports
 

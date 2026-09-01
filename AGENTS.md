@@ -30,7 +30,7 @@ pkg/engine/         public facade for hosted/API
 worker/             Cloudflare Worker: proxy, cron, /t/*, MCP
 web/                Vite + React ops dashboard
 migrations/         additive hosted SQL
-docs/               UPSTREAM, ARCHITECTURE, DEPLOYMENT, OAUTH, MCP, SECURITY, RELEASING
+docs/               UPSTREAM, ARCHITECTURE, DEPLOYMENT, OAUTH, MCP, SECURITY, RELEASING, PARITY, INTEGRATIONS
 ```
 
 ## Upstream hooks (keep diffs small)
@@ -70,7 +70,7 @@ Nav IA: Overview, Campaigns, Inbox, Leads, Sending Accounts, Settings.
 ```bash
 go test ./internal/hosted/ ./pkg/engine/ ./internal/ ./cmd/...
 cd web && npm run build
-cd worker && npm install --legacy-peer-deps && npx tsc --noEmit
+cd worker && npm install --legacy-peer-deps && npm run typecheck
 ```
 
 - Real SQLite `:memory:` for behavioral tests; mock only `GWSClient`

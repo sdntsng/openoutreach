@@ -311,6 +311,16 @@ if track_secret:
     env["TRACKING_HMAC_SECRET"] = track_secret
 redirect = (redirect or "").strip() or f"{base}/api/v1/accounts/google/oauth/callback"
 env["GOOGLE_REDIRECT_URL"] = redirect
+import os
+for key in (
+    "FEATURE_CF_EMAIL", "FEATURE_RESEND", "FEATURE_SES", "FEATURE_WARMUP",
+    "FEATURE_HUNTER", "FEATURE_MICROSOFT", "FEATURE_GMAIL", "FEATURE_SMTP_IMAP",
+    "MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET", "MICROSOFT_TENANT_ID",
+    "AUTH_MODE",
+):
+    val = os.environ.get(key, "").strip()
+    if val:
+        env[key] = val
 # Bumps on each deploy so warm containers pick up new env.
 import time
 env["CONTAINER_BOOT_REVISION"] = str(int(time.time()))
@@ -374,6 +384,13 @@ sync_secrets() {
   if [[ -n "${GOOGLE_REDIRECT_URL:-}" ]]; then
     secrets+=(GOOGLE_REDIRECT_URL)
   fi
+  for name in FEATURE_CF_EMAIL FEATURE_RESEND FEATURE_SES FEATURE_WARMUP FEATURE_HUNTER \
+              FEATURE_MICROSOFT FEATURE_GMAIL FEATURE_SMTP_IMAP \
+              MICROSOFT_CLIENT_ID MICROSOFT_CLIENT_SECRET MICROSOFT_TENANT_ID; do
+    if [[ -n "${!name:-}" ]]; then
+      secrets+=("$name")
+    fi
+  done
 
   for name in "${secrets[@]}"; do
     put_secret "$name"
@@ -395,7 +412,10 @@ Post-deploy checklist:
      Or set AUTH_MODE=hosted for in-app Google/email at $base/sign-in
   2. Google OAuth redirect URI (Gmail):
      ${base}/api/v1/accounts/google/oauth/callback
-  3. Settings → Connect Google in the dashboard
+  3. Microsoft OAuth redirect URI (optional):
+     ${base}/api/v1/accounts/microsoft/oauth/callback
+     Access bypass required (see setup-cf-access.sh).
+  4. Settings → Sending Accounts → Connect Google / Microsoft / SMTP
 
 Smoke test:
   curl -sS "$base/internal/health" -H "X-Internal-Token: \$INTERNAL_CONTAINER_TOKEN"

@@ -9,7 +9,8 @@
     "build": "npm run build:web",
     "deploy": "npm run build && wrangler deploy",
     "deploy:cf": "npm run deploy",
-    "types": "wrangler types"
+    "types": "wrangler types",
+    "typecheck": "node -e \"import fs from 'node:fs'; if (!fs.existsSync('src/container-env.ts')) fs.copyFileSync('src/container-env.example.ts','src/container-env.ts')\" && tsc --noEmit"
   },
   "cloudflare": {
     "bindings": {
@@ -24,6 +25,12 @@
       },
       "GOOGLE_CLIENT_SECRET": {
         "description": "Google OAuth client secret."
+      },
+      "MICROSOFT_CLIENT_ID": {
+        "description": "Optional. Microsoft Entra app ID for Outlook/Microsoft 365 send + read."
+      },
+      "MICROSOFT_CLIENT_SECRET": {
+        "description": "Optional. Microsoft Entra client secret."
       },
       "CREDENTIAL_ENCRYPTION_KEY": {
         "description": "Generate: `openssl rand -hex 32`. **Do not rotate** after connecting Gmail accounts."
@@ -57,6 +64,9 @@
       },
       "AUTH_ALLOWED_EMAILS": {
         "description": "Comma-separated allowlist. Access policy (default) and Better Auth signup (hosted)."
+      },
+      "FEATURE_CF_EMAIL": {
+        "description": "Optional. Set to `1` to enable Cloudflare Email Sending accounts (transactional; needs Email Routing to this Worker for replies)."
       }
     }
   },

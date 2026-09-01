@@ -21,5 +21,6 @@ Local dev:
 ```bash
 cp .dev.vars.example .dev.vars
 npm install --legacy-peer-deps
+npm run typecheck
 npm run dev
 ```

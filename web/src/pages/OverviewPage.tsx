@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type OverviewStats, type Period } from "../api";
+import { Link } from "react-router-dom";
+import { api, type OverviewStats, type Period, type SetupStatus } from "../api";
 
 const PERIODS: { id: Period; label: string }[] = [
   { id: "today", label: "Today" },
@@ -11,6 +12,18 @@ const PERIODS: { id: Period; label: string }[] = [
 const OPEN_TOOLTIP =
   "Approx. opens are inferred from tracking pixel loads. Image proxies, privacy features, and prefetch can inflate or deflate this number — treat it as directional, not exact.";
 
+const SETUP_STEPS: { action: string; label: string; to: string; done: (s: SetupStatus) => boolean }[] = [
+  { action: "connect_account", label: "Connect a sending account", to: "/accounts", done: (s) => s.accounts > 0 },
+  { action: "import_leads", label: "Import leads (CSV, Sheets, or Apollo)", to: "/leads", done: (s) => s.leads > 0 },
+  { action: "create_draft", label: "Create a draft campaign", to: "/campaigns/new", done: (s) => s.campaigns > 0 },
+  {
+    action: "preview_and_activate",
+    label: "Preview, then activate with confirm",
+    to: "/campaigns",
+    done: (s) => s.accounts > 0 && s.leads > 0 && s.campaigns > 0,
+  },
+];
+
 function pct(n: number | undefined): string {
   if (n == null || Number.isNaN(n)) return "—";
   const v = n <= 1 ? n * 100 : n;
@@ -20,6 +33,7 @@ function pct(n: number | undefined): string {
 export default function OverviewPage() {
   const [period, setPeriod] = useState<Period>("7d");
   const [stats, setStats] = useState<OverviewStats | null>(null);
+  const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -27,10 +41,11 @@ export default function OverviewPage() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    api
-      .overview(period)
-      .then((data) => {
-        if (!cancelled) setStats(data);
+    Promise.all([api.overview(period), api.setup().catch(() => null)])
+      .then(([data, s]) => {
+        if (cancelled) return;
+        setStats(data);
+        setSetup(s);
       })
       .catch((err: Error) => {
         if (!cancelled) {
@@ -46,9 +61,36 @@ export default function OverviewPage() {
     };
   }, [period]);
 
+  const showChecklist = setup && (setup.accounts === 0 || setup.campaigns === 0 || setup.leads === 0);
+
   return (
     <div>
       <h1>Overview</h1>
+      {showChecklist && setup && (
+        <div className="panel" style={{ marginBottom: "1.25rem" }}>
+          <h2 style={{ marginTop: 0 }}>Get started</h2>
+          <p className="muted">Connect a mailbox, import leads, then create a draft. Activate is a separate confirm.</p>
+          <ol style={{ margin: "0.75rem 0 0", paddingLeft: "1.2rem" }}>
+            {SETUP_STEPS.map((step) => {
+              const done = step.done(setup);
+              return (
+                <li key={step.action} style={{ marginBottom: "0.4rem" }}>
+                  {done ? (
+                    <span className="muted">{step.label} — done</span>
+                  ) : (
+                    <Link to={step.to}>{step.label}</Link>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+          {!setup.encryption_ready && (
+            <p className="muted" style={{ marginTop: "0.75rem" }}>
+              Vault is not ready. Set <code>CREDENTIAL_ENCRYPTION_KEY</code> once on the server — no extra provider flags.
+            </p>
+          )}
+        </div>
+      )}
       <div className="filters">
         {PERIODS.map((p) => (
           <button

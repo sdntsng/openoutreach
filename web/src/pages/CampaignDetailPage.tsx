@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, type CampaignStats } from "../api";
 
 type Tab = "overview" | "sequence" | "preview" | "stats";
@@ -12,14 +12,29 @@ function str(v: unknown, fallback = "—"): string {
   return String(v);
 }
 
+function downloadCSV(filename: string, csv: string) {
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function CampaignDetailPage() {
   const { id = "" } = useParams();
+  const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("overview");
   const [campaign, setCampaign] = useState<Record<string, unknown> | null>(null);
   const [stats, setStats] = useState<CampaignStats | null>(null);
   const [preview, setPreview] = useState<unknown>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [apolloQ, setApolloQ] = useState("");
+  const [apolloTitles, setApolloTitles] = useState("");
+  const [apolloRows, setApolloRows] = useState<Record<string, string>[]>([]);
+  const [sheetURL, setSheetURL] = useState("");
 
   async function reload() {
     const c = await api.getCampaign(id);
@@ -107,6 +122,55 @@ export default function CampaignDetailPage() {
               Resume
             </button>
           )}
+          {(status === "draft" || status === "paused") && (
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => {
+                void run(() =>
+                  api.preflightCampaign(id).then((res) => {
+                    const warns = res.warnings?.length ? res.warnings.join(" · ") : "no warnings";
+                    window.alert(`${res.ready ? "Ready" : "Not ready"} — ${warns}`);
+                    return res;
+                  }),
+                );
+              }}
+            >
+              Preflight
+            </button>
+          )}
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => {
+              const next = window.prompt("Clone as draft. New name?", `${name}-copy`);
+              if (!next) return;
+              setBusy(true);
+              setError(null);
+              api
+                .cloneCampaign(id, { name: next })
+                .then((res) => navigate(`/campaigns/${res.campaign_id}`))
+                .catch((err: Error) => setError(err.message))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Clone
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => {
+              void api
+                .exportCampaignLeads(id)
+                .then((res) => downloadCSV(`${name}-leads.csv`, res.csv))
+                .catch((err: Error) => setError(err.message));
+            }}
+          >
+            Export leads
+          </button>
         </div>
       </div>
       {campaign && (
@@ -140,6 +204,88 @@ export default function CampaignDetailPage() {
           <p>
             <strong>Send window:</strong> {str(campaign.send_window)} ({str(campaign.timezone)})
           </p>
+          <div className="form-grid" style={{ marginTop: "1.25rem" }}>
+            <h3 style={{ margin: 0 }}>Import leads (draft-safe)</h3>
+            <label>
+              Apollo search
+              <input
+                value={apolloQ}
+                onChange={(e) => setApolloQ(e.target.value)}
+                placeholder="keywords, company…"
+              />
+            </label>
+            <label>
+              Titles (optional)
+              <input
+                value={apolloTitles}
+                onChange={(e) => setApolloTitles(e.target.value)}
+                placeholder="CRO, CMO"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={busy || !apolloQ.trim()}
+              onClick={() => {
+                setBusy(true);
+                setError(null);
+                const titles = apolloTitles
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean);
+                api
+                  .apolloSearch({
+                    q_keywords: apolloQ.trim(),
+                    per_page: 10,
+                    person_titles: titles.length ? titles : undefined,
+                  })
+                  .then((res) => setApolloRows(res.leads || []))
+                  .catch((err: Error) => setError(err.message))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              Search Apollo
+            </button>
+            {apolloRows.length > 0 && (
+              <>
+                <p className="muted">{apolloRows.length} preview rows (not imported yet)</p>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    const csv = [
+                      "email,first_name,last_name,company,domain,title,linkedin_url",
+                      ...apolloRows.map((r) =>
+                        [r.email, r.first_name, r.last_name, r.company, r.domain, r.title, r.linkedin_url]
+                          .map((v) => `"${String(v || "").replaceAll('"', '""')}"`)
+                          .join(","),
+                      ),
+                    ].join("\n");
+                    void run(() => api.addLeads(id, csv));
+                  }}
+                >
+                  Import Apollo preview
+                </button>
+              </>
+            )}
+            <label>
+              Google Sheet or CSV URL
+              <input
+                value={sheetURL}
+                onChange={(e) => setSheetURL(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/d/…"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={busy || !sheetURL.trim()}
+              onClick={() => {
+                const cid = Number(campaign.id);
+                void run(() => api.sheetsImport({ url: sheetURL.trim(), campaign_id: cid }));
+              }}
+            >
+              Import from Sheet
+            </button>
+          </div>
           {stats && (
             <div className="metrics" style={{ marginTop: "1rem" }}>
               <div className="metric">

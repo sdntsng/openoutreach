@@ -64,13 +64,15 @@ cp .env.deploy.example .env.deploy
 ./scripts/deploy-cf.sh
 ```
 
-Full guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (Postgres options, secrets, Access, OAuth, smoke tests).
+Full guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (Postgres options, secrets, Access, OAuth, Cloudflare Email Sending, smoke tests).
 
 ## Docs
 
 | Doc | Purpose |
 |-----|---------|
 | [AGENTS.md](AGENTS.md) | Agent / contributor context graph |
+| [docs/PARITY.md](docs/PARITY.md) | Closed/open-source comparison + in-app gaps we closed |
+| [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) | Lead sources, send providers, Settings/MCP roadmap |
 | [docs/UPSTREAM.md](docs/UPSTREAM.md) | cold-cli fork baseline |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Hosted topology |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Cloudflare + Postgres rules |

@@ -37,6 +37,11 @@ export default function CampaignCreatePage() {
   const [validation, setValidation] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [windowStart, setWindowStart] = useState("09:00");
+  const [windowEnd, setWindowEnd] = useState("17:00");
+  const [timezone, setTimezone] = useState("UTC");
+  const [openTracking, setOpenTracking] = useState(false);
+  const [preflight, setPreflight] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -92,6 +97,10 @@ export default function CampaignCreatePage() {
         leads_csv: csv,
         accounts: accountEmails,
         draft_only: false,
+        send_window_start: windowStart,
+        send_window_end: windowEnd,
+        timezone,
+        open_tracking: openTracking,
       });
       setCampaignId(created.campaign_id);
       setStep("preview");
@@ -148,6 +157,26 @@ export default function CampaignCreatePage() {
           <label>
             Campaign name
             <input value={name} onChange={(e) => setName(e.target.value)} required />
+          </label>
+          <label>
+            Send window start
+            <input value={windowStart} onChange={(e) => setWindowStart(e.target.value)} placeholder="09:00" />
+          </label>
+          <label>
+            Send window end
+            <input value={windowEnd} onChange={(e) => setWindowEnd(e.target.value)} placeholder="17:00" />
+          </label>
+          <label>
+            Timezone
+            <input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="UTC" />
+          </label>
+          <label className="row">
+            <input
+              type="checkbox"
+              checked={openTracking}
+              onChange={(e) => setOpenTracking(e.target.checked)}
+            />
+            Approx. open tracking (pixel; never blocks send)
           </label>
           <fieldset>
             <legend>Sending accounts</legend>
@@ -210,6 +239,26 @@ export default function CampaignCreatePage() {
           <p>
             <strong>Consequential:</strong> Activate starts sending due emails via the tick engine.
           </p>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy || campaignId == null}
+            onClick={() => {
+              if (campaignId == null) return;
+              setBusy(true);
+              api
+                .preflightCampaign(campaignId)
+                .then((res) => {
+                  const warns = res.warnings?.length ? res.warnings.join(" · ") : "no warnings";
+                  setPreflight(`${res.ready ? "Ready" : "Not ready"} — ${warns}`);
+                })
+                .catch((err: Error) => setError(err.message))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Run preflight
+          </button>
+          {preflight && <p className="muted">{preflight}</p>}
           <button type="button" className="danger" onClick={onActivate} disabled={busy}>
             Activate campaign
           </button>

@@ -24,6 +24,7 @@ func (s *Server) workspaceFromRequest(r *http.Request) string {
 
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	ws := s.workspaceFromRequest(r)
+	warmup := workspaceWarmupStatus(s.Store.DB, ws)
 	rows, err := query(s.Store.DB, `
 		SELECT a.id, a.workspace_id, a.email, a.daily_limit, a.status, a.provider, a.last_send_at
 		FROM accounts a
@@ -33,23 +34,26 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	defer rows.Close()
 	type acct struct {
-		ID          int64   `json:"id"`
-		WorkspaceID string  `json:"workspace_id"`
-		Email       string  `json:"email"`
-		DailyLimit  int     `json:"daily_limit"`
-		Status      string  `json:"status"`
-		Provider    string  `json:"provider"`
-		LastSendAt  *string `json:"last_send_at,omitempty"`
-		SentToday   int     `json:"sent_today"`
-		OAuthHealth string  `json:"oauth_health"`
+		ID                 int64   `json:"id"`
+		WorkspaceID        string  `json:"workspace_id"`
+		Email              string  `json:"email"`
+		DailyLimit         int     `json:"daily_limit"`
+		Status             string  `json:"status"`
+		Provider           string  `json:"provider"`
+		LastSendAt         *string `json:"last_send_at,omitempty"`
+		SentToday          int     `json:"sent_today"`
+		OAuthHealth        string  `json:"oauth_health"`
+		WarmupStatus       string  `json:"warmup_status"`
+		ReplyMode          string  `json:"reply_mode"`
+		DomainVerification string  `json:"domain_verification"`
 	}
 	var list []acct
 	for rows.Next() {
 		var a acct
 		var last sql.NullTime
 		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.Email, &a.DailyLimit, &a.Status, &a.Provider, &last); err != nil {
+			rows.Close()
 			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
@@ -57,15 +61,26 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 			v := last.Time.UTC().Format(time.RFC3339)
 			a.LastSendAt = &v
 		}
+		a.WarmupStatus = warmup
+		a.ReplyMode, a.DomainVerification = mailboxSurface(a.Provider)
+		list = append(list, a)
+	}
+	scanErr := rows.Err()
+	rows.Close()
+	if scanErr != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", scanErr.Error())
+		return
+	}
+	cutoff := time.Now().UTC().Truncate(24 * time.Hour).Format(time.RFC3339)
+	for i := range list {
 		_ = queryRow(s.Store.DB, `
 			SELECT COUNT(*) FROM events
-			WHERE account_id = ? AND type = 'sent' AND timestamp >= ?`, a.ID, time.Now().UTC().Truncate(24*time.Hour).Format(time.RFC3339)).Scan(&a.SentToday)
-		oauth, _ := GetHostedKV(s.Store.DB, "account_oauth:"+strings.ToLower(a.Email))
+			WHERE account_id = ? AND type = 'sent' AND timestamp >= ?`, list[i].ID, cutoff).Scan(&list[i].SentToday)
+		oauth, _ := GetHostedKV(s.Store.DB, "account_oauth:"+strings.ToLower(list[i].Email))
 		if oauth == "" {
 			oauth = "ok"
 		}
-		a.OAuthHealth = oauth
-		list = append(list, a)
+		list[i].OAuthHealth = oauth
 	}
 	if list == nil {
 		list = []acct{}
@@ -88,11 +103,66 @@ func (s *Server) handleAccountStatus(w http.ResponseWriter, r *http.Request) {
 	if oauth == "" {
 		oauth = "ok"
 	}
+	replyMode, domainVer := mailboxSurface(acct.Provider)
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"id": acct.ID, "email": acct.Email, "status": acct.Status,
 		"provider": acct.Provider, "daily_limit": acct.DailyLimit,
-		"oauth_health": oauth,
+		"oauth_health":  oauth,
+		"warmup_status": workspaceWarmupStatus(s.Store.DB, s.workspaceFromRequest(r)),
+		"reply_mode":    replyMode, "domain_verification": domainVer,
 	}})
+}
+
+// mailboxSurface is the Accounts-page health view for a send provider.
+// Resend is send-only (bounce webhook). Cloudflare Email uses Email Routing for replies.
+// Warmup is never a send path.
+func mailboxSurface(provider string) (replyMode, domainVerification string) {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "resend", "ses", "mailgun", "postmark":
+		return "send_only", "dns_at_provider"
+	case "cf_email", "cloudflare":
+		return "email_routing", "dns_at_cloudflare"
+	case "smtp_imap", "smtp":
+		return "imap", "smtp"
+	default:
+		return "oauth", "oauth"
+	}
+}
+
+func workspaceWarmupStatus(db *sql.DB, ws string) string {
+	var status, metadata string
+	err := queryRow(db, `
+		SELECT status, COALESCE(metadata, '')
+		FROM integration_credentials
+		WHERE workspace_id = ? AND provider = ?
+		ORDER BY id DESC LIMIT 1`, ws, "warmup").Scan(&status, &metadata)
+	if err != nil {
+		return "unset"
+	}
+	if meta := jsonStringField(metadata, "status"); meta != "" {
+		status = meta
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "active", "ok", "healthy", "configured":
+		return "healthy"
+	case "error", "failed", "unhealthy":
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+func jsonStringField(raw, key string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return ""
+	}
+	s, _ := m[key].(string)
+	return strings.TrimSpace(s)
 }
 
 func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
@@ -282,17 +352,17 @@ func (s *Server) handleListCampaigns(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type row struct {
-		ID       int64   `json:"id"`
-		Name     string  `json:"name"`
-		Status   string  `json:"status"`
-		Leads    int     `json:"leads"`
-		Sent     int     `json:"sent"`
-		Replies  int     `json:"replies"`
-		Bounces  int     `json:"bounces"`
-		ApproxOpens int  `json:"approx_opens"`
-		ReplyRate float64 `json:"reply_rate"`
-		NextSend *string `json:"next_send,omitempty"`
-		CreatedAt string `json:"created_at"`
+		ID          int64   `json:"id"`
+		Name        string  `json:"name"`
+		Status      string  `json:"status"`
+		Leads       int     `json:"leads"`
+		Sent        int     `json:"sent"`
+		Replies     int     `json:"replies"`
+		Bounces     int     `json:"bounces"`
+		ApproxOpens int     `json:"approx_opens"`
+		ReplyRate   float64 `json:"reply_rate"`
+		NextSend    *string `json:"next_send,omitempty"`
+		CreatedAt   string  `json:"created_at"`
 	}
 	var list []row
 	for rows.Next() {
@@ -338,6 +408,16 @@ func (s *Server) handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
+	var skipped int
+	if req.LeadsCSV != "" {
+		filtered, n, ferr := s.filterSuppressedCSV(ws, req.LeadsCSV)
+		if ferr != nil {
+			writeErr(w, http.StatusBadRequest, "create_failed", ferr.Error())
+			return
+		}
+		req.LeadsCSV = filtered
+		skipped = n
+	}
 	if req.DraftOnly || (req.SequenceYAML == "" && req.LeadsCSV == "") {
 		res, err := engine.CreateDraftCampaign(s.Store.DB, engine.CreateDraftCampaignOpts{
 			WorkspaceID: ws, Name: req.Name, AccountEmails: req.Accounts,
@@ -351,11 +431,15 @@ func (s *Server) handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 		if req.OpenTracking {
 			_ = SetHostedKV(s.Store.DB, fmt.Sprintf("campaign_open_tracking:%d", res.ID), "1")
 		}
+		warnings := append([]string{}, res.Warnings...)
+		if skipped > 0 {
+			warnings = append(warnings, fmt.Sprintf("%d suppressed leads skipped", skipped))
+		}
 		writeJSON(w, http.StatusCreated, envelope{Data: map[string]any{
 			"campaign_id": res.ID, "status": "draft", "name": res.Name,
-			"lead_count": 0, "warnings": res.Warnings,
+			"lead_count": 0, "warnings": warnings,
 			"next_actions": []string{"add_leads", "preview_campaign", "activate_campaign"},
-		}})
+		}, Warnings: warnings})
 		return
 	}
 	res, err := engine.CreateCampaign(s.Store.DB, engine.CreateCampaignOpts{
@@ -370,15 +454,19 @@ func (s *Server) handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 	if req.OpenTracking {
 		_ = SetHostedKV(s.Store.DB, fmt.Sprintf("campaign_open_tracking:%d", res.ID), "1")
 	}
+	warnings := append([]string{}, res.Warnings...)
+	if skipped > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d suppressed leads skipped", skipped))
+	}
 	writeJSON(w, http.StatusCreated, envelope{Data: map[string]any{
-		"campaign_id":         res.ID,
-		"status":              "draft",
-		"name":                res.Name,
-		"lead_count":          res.Leads,
-		"scheduled_messages":  res.ScheduledSends,
-		"warnings":            res.Warnings,
-		"next_actions":        []string{"preview_campaign", "activate_campaign"},
-	}, Warnings: res.Warnings})
+		"campaign_id":        res.ID,
+		"status":             "draft",
+		"name":               res.Name,
+		"lead_count":         res.Leads,
+		"scheduled_messages": res.ScheduledSends,
+		"warnings":           warnings,
+		"next_actions":       []string{"preview_campaign", "activate_campaign"},
+	}, Warnings: warnings})
 }
 
 func (s *Server) handleGetCampaign(w http.ResponseWriter, r *http.Request) {
@@ -417,7 +505,7 @@ func (s *Server) handleActivateCampaign(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"name": name, "status": "active",
-		"message": "Campaign activated. Cron/tick will send due messages. This action is consequential.",
+		"message":      "Campaign activated. Cron/tick will send due messages. This action is consequential.",
 		"next_actions": []string{"get_campaign_stats", "list_replies"},
 	}})
 }
@@ -513,20 +601,58 @@ func (s *Server) handleAddLeads(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := io.ReadAll(r.Body)
 	var req struct {
-		CSV string `json:"csv"`
+		CSV     string `json:"csv"`
+		DryRun  bool   `json:"dry_run"`
+		Confirm bool   `json:"confirm"`
 	}
 	_ = json.Unmarshal(body, &req)
 	if req.CSV == "" {
 		req.CSV = string(body)
+	}
+	ws := s.workspaceFromRequest(r)
+	filtered, skipped, ferr := s.filterSuppressedCSV(ws, req.CSV)
+	if ferr != nil && !req.DryRun {
+		writeErr(w, http.StatusBadRequest, "add_leads_failed", ferr.Error())
+		return
+	}
+	if ferr == nil {
+		req.CSV = filtered
+	}
+	if req.DryRun {
+		records, _, err := internal.ParseLeadsCSVFromReader(strings.NewReader(req.CSV))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "parse_failed", err.Error())
+			return
+		}
+		n := len(records)
+		if n > 5 {
+			n = 5
+		}
+		writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+			"dry_run": true, "count": len(records), "sample": records[:n],
+		}})
+		return
+	}
+	var status string
+	_ = queryRow(s.Store.DB, `SELECT status FROM campaigns WHERE name = ?`, name).Scan(&status)
+	if status == "active" && !req.Confirm {
+		writeErr(w, http.StatusBadRequest, "confirm_required", "importing into an active campaign requires confirm=true")
+		return
 	}
 	res, err := internal.AddLeadsToCampaign(s.Store.DB, name, "", req.CSV)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "add_leads_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+	out := map[string]any{
 		"result": res, "next_actions": []string{"preview_campaign", "activate_campaign"},
-	}})
+	}
+	var warnings []string
+	if skipped > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d suppressed leads skipped", skipped))
+		out["suppressed_skipped"] = skipped
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: out, Warnings: warnings})
 }
 
 func (s *Server) handleRemoveLead(w http.ResponseWriter, r *http.Request) {
@@ -633,8 +759,18 @@ func (s *Server) handleThreadReply(w http.ResponseWriter, r *http.Request) {
 		Body      string `json:"body"`
 		ConfirmTo string `json:"confirm_to"`
 		Send      bool   `json:"send"`
+		Confirm   bool   `json:"confirm"`
 	}
 	_ = json.Unmarshal(body, &req)
+	if req.Confirm {
+		req.Send = true
+	}
+	var globalStatus string
+	_ = queryRow(s.Store.DB, `SELECT global_status FROM leads WHERE id = ?`, lid).Scan(&globalStatus)
+	if req.Send && (globalStatus == "blacklisted" || globalStatus == "bounced") {
+		writeErr(w, http.StatusBadRequest, "suppressed", "lead is "+globalStatus+"; reply not sent")
+		return
+	}
 	if !req.Send {
 		preview, err := engine.PreviewInboxReply(engine.PreviewInboxReplyConfig{
 			DB: s.Store.DB, CampaignID: cid, LeadID: lid, Body: req.Body, WorkspaceID: ws,
@@ -738,13 +874,17 @@ func (s *Server) handleValidateLeads(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListLeads(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	domain := r.URL.Query().Get("domain")
 	status := r.URL.Query().Get("status")
 	limit := 100
-	leads, err := internal.ListLeads(s.Store.DB, domain, status, limit)
+	leads, err := searchLeads(s.Store.DB, q, domain, status, limit)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
+	}
+	if leads == nil {
+		leads = []internal.LeadListRow{}
 	}
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{"leads": leads}})
 }
@@ -763,6 +903,12 @@ func (s *Server) handleBlacklistLead(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "blacklist_failed", err.Error())
 		return
 	}
+	kind := "email"
+	value := strings.ToLower(strings.TrimSpace(target))
+	if !strings.Contains(value, "@") {
+		kind = "domain"
+	}
+	_, _ = s.upsertSuppression(s.workspaceFromRequest(r), kind, value)
 	writeJSON(w, http.StatusOK, envelope{Data: res})
 }
 

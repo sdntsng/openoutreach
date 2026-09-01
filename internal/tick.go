@@ -77,6 +77,9 @@ func Tick(cfg TickConfig) (*TickResult, error) {
 	}
 
 	gwsAccounts := accountsByProvider(accounts, AccountProviderGWS)
+	gwsAccounts = append(gwsAccounts, accountsByProvider(accounts, "microsoft")...)
+	gwsAccounts = append(gwsAccounts, accountsByProvider(accounts, "resend")...)
+	gwsAccounts = append(gwsAccounts, accountsByProvider(accounts, "cf_email")...)
 	smtpIMAPAccounts := accountsByProvider(accounts, AccountProviderSMTPIMAP)
 
 	discordCursorReady := cfg.DiscordNotifier != nil
@@ -483,7 +486,7 @@ func sendRenderedEmail(cfg TickConfig, account Account, emailParams EmailParams)
 		return "", "", err
 	}
 	switch account.Provider {
-	case AccountProviderGWS:
+	case AccountProviderGWS, "microsoft", "resend", "cf_email":
 		if cfg.GWS == nil {
 			return "", "", fmt.Errorf("gws sender is not configured")
 		}
