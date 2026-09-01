@@ -1,7 +1,9 @@
 import { Container, getContainer } from "@cloudflare/containers";
+import { DurableObject } from "cloudflare:workers";
 import { accessEmail, createAuth, getSession } from "./auth";
 import { accessAudience, getAuthMode, type AuthMode } from "./auth-mode";
 import { containerEnv } from "./container-env";
+import { resolveContainerEnv } from "./container-env-resolve";
 import { handleD1 } from "./d1";
 import { handleMcp } from "./mcp";
 
@@ -62,50 +64,15 @@ export class OutreachContainer extends Container<Env> {
 
   envVars: Record<string, string> = { ...containerEnv };
 
-  private containerEnvForStart(options?: { envVars?: Record<string, string> }): Record<string, string> {
-    const e = this.env;
-    const forwarded: Record<string, string> = {
-      ...containerEnv,
-      LISTEN_ADDR: ":8080",
-      ...(options?.envVars || {}),
-    };
-    const map: Array<[keyof Env, string]> = [
-      ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID"],
-      ["GOOGLE_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET"],
-      ["CREDENTIAL_ENCRYPTION_KEY", "CREDENTIAL_ENCRYPTION_KEY"],
-      ["INTERNAL_CONTAINER_TOKEN", "INTERNAL_CONTAINER_TOKEN"],
-      ["PUBLIC_BASE_URL", "PUBLIC_BASE_URL"],
-      ["TRACKING_HMAC_SECRET", "TRACKING_HMAC_SECRET"],
-      ["GOOGLE_REDIRECT_URL", "GOOGLE_REDIRECT_URL"],
-      ["OPENOUTREACH_WORKSPACE_ID", "OPENOUTREACH_WORKSPACE_ID"],
-      ["AUTH_MODE", "AUTH_MODE"],
-      ["MCP_BEARER_TOKEN", "MCP_BEARER_TOKEN"],
-      ["MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_ID"],
-      ["MICROSOFT_CLIENT_SECRET", "MICROSOFT_CLIENT_SECRET"],
-      ["MICROSOFT_TENANT_ID", "MICROSOFT_TENANT_ID"],
-      ["FEATURE_GMAIL", "FEATURE_GMAIL"],
-      ["FEATURE_MICROSOFT", "FEATURE_MICROSOFT"],
-      ["FEATURE_SMTP_IMAP", "FEATURE_SMTP_IMAP"],
-      ["FEATURE_APOLLO", "FEATURE_APOLLO"],
-      ["FEATURE_CLAY", "FEATURE_CLAY"],
-      ["FEATURE_WEBHOOK", "FEATURE_WEBHOOK"],
-      ["FEATURE_SHEETS", "FEATURE_SHEETS"],
-      ["FEATURE_RESEND", "FEATURE_RESEND"],
-      ["FEATURE_SES", "FEATURE_SES"],
-      ["FEATURE_CF_EMAIL", "FEATURE_CF_EMAIL"],
-      ["FEATURE_WARMUP", "FEATURE_WARMUP"],
-      ["FEATURE_HUNTER", "FEATURE_HUNTER"],
-    ];
-    for (const [from, to] of map) {
-      const v = e[from];
-      if (typeof v === "string" && v) forwarded[to] = v;
-    }
-    if (typeof e.DATABASE_URL === "string" && e.DATABASE_URL) {
-      forwarded.COLD_CLI_DATABASE_URL = e.DATABASE_URL;
-      forwarded.DATABASE_URL = e.DATABASE_URL;
-    } else if (typeof e.PUBLIC_BASE_URL === "string" && e.PUBLIC_BASE_URL) {
-      forwarded.OPENOUTREACH_D1_PROXY = e.PUBLIC_BASE_URL.replace(/\/$/, "");
-    }
+  constructor(ctx: DurableObject["ctx"], env: Env) {
+    super(ctx, env);
+    // containerFetch starts via startAndWaitForPorts → this.envVars, not start().
+    this.envVars = resolveContainerEnv(this.env as unknown as Record<string, unknown>);
+  }
+
+  private applyContainerEnv(extras?: Record<string, string>): Record<string, string> {
+    const forwarded = resolveContainerEnv(this.env as unknown as Record<string, unknown>, extras);
+    this.envVars = forwarded;
     return forwarded;
   }
 
@@ -126,6 +93,7 @@ export class OutreachContainer extends Container<Env> {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    this.applyContainerEnv();
     await this.ensureBootRevision();
     return super.fetch(request);
   }
@@ -138,8 +106,7 @@ export class OutreachContainer extends Container<Env> {
     },
     waitOptions?: { signal?: AbortSignal },
   ): Promise<void> {
-    const forwarded = this.containerEnvForStart(options);
-    this.envVars = forwarded;
+    const forwarded = this.applyContainerEnv(options?.envVars);
     return super.start(
       {
         ...options,
@@ -148,6 +115,29 @@ export class OutreachContainer extends Container<Env> {
       },
       waitOptions,
     );
+  }
+
+  override startAndWaitForPorts(
+    portsOrArgs?: number | number[] | { ports?: number | number[]; cancellationOptions?: { abort?: AbortSignal }; startOptions?: { envVars?: Record<string, string> } },
+    cancellationOptions?: { abort?: AbortSignal },
+    startOptions?: { envVars?: Record<string, string>; enableInternet?: boolean; entrypoint?: string[] },
+  ): Promise<void> {
+    const extras =
+      portsOrArgs && typeof portsOrArgs === "object" && !Array.isArray(portsOrArgs)
+        ? portsOrArgs.startOptions?.envVars
+        : startOptions?.envVars;
+    const forwarded = this.applyContainerEnv(extras);
+    if (portsOrArgs && typeof portsOrArgs === "object" && !Array.isArray(portsOrArgs)) {
+      return super.startAndWaitForPorts({
+        ...portsOrArgs,
+        startOptions: { ...portsOrArgs.startOptions, envVars: forwarded },
+      });
+    }
+    return super.startAndWaitForPorts(portsOrArgs, cancellationOptions, {
+      ...startOptions,
+      envVars: forwarded,
+      enableInternet: startOptions?.enableInternet ?? true,
+    });
   }
 }
 
