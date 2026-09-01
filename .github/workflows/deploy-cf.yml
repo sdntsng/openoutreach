@@ -1,0 +1,41 @@
+# Optional fallback if Workers Builds Connect is not used.
+# Does not run on push unless repo variable CF_DEPLOY=1 is set.
+# Secrets: CLOUDFLARE_API_TOKEN (Workers Scripts Edit + Account Containers + D1).
+name: deploy-cf
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-cf
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.CF_DEPLOY == '1' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm install --legacy-peer-deps
+      - name: Check Cloudflare token
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "Add CLOUDFLARE_API_TOKEN, or use Workers Builds Connect on Worker openoutreach (docs/DEPLOYMENT.md §B)."
+            exit 1
+          fi
+      - name: Deploy existing Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npm run deploy
