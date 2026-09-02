@@ -422,6 +422,17 @@ export const api = {
       "/integrations/sheets/import",
       { method: "POST", body: JSON.stringify(body) },
     ),
+
+  putWebhookEndpoint: (body: {
+    provider: string;
+    name: string;
+    hmac_secret: string;
+    campaign_id?: number;
+  }) =>
+    request<{ provider: string; name: string; ingest_path: string }>("/integrations/webhooks", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 export interface Capabilities {

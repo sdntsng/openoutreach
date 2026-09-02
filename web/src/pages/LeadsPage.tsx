@@ -1,5 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, asArray, type Lead, type Suppression, type VerifyResult } from "../api";
+import { api, asArray, type Campaign, type Lead, type Suppression, type VerifyResult } from "../api";
+import { LeadImport } from "../LeadImport";
+import { StatusBadge } from "../ui";
 
 function downloadCSV(filename: string, csv: string) {
   const blob = new Blob([csv], { type: "text/csv" });
@@ -14,8 +16,10 @@ function downloadCSV(filename: string, csv: string) {
 export default function LeadsPage() {
   const [q, setQ] = useState("");
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [suppressions, setSuppressions] = useState<Suppression[]>([]);
   const [block, setBlock] = useState("");
+  const [blockKind, setBlockKind] = useState<"auto" | "email" | "domain">("auto");
   const [verifyText, setVerifyText] = useState("");
   const [verifyRows, setVerifyRows] = useState<VerifyResult[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -24,12 +28,14 @@ export default function LeadsPage() {
   async function load(query?: string) {
     setError(null);
     try {
-      const [data, sup] = await Promise.all([
+      const [data, sup, camps] = await Promise.all([
         api.listLeads(query),
         api.listSuppressions().catch(() => ({ suppressions: [] as Suppression[] })),
+        api.listCampaigns().catch(() => ({ campaigns: [] as Campaign[] })),
       ]);
       setLeads(asArray(data, "leads"));
       setSuppressions(asArray(sup, "suppressions"));
+      setCampaigns(asArray(camps, "campaigns"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -64,7 +70,8 @@ export default function LeadsPage() {
     setBusy(true);
     setError(null);
     try {
-      if (value.includes("@")) {
+      const kind = blockKind === "auto" ? (value.includes("@") ? "email" : "domain") : blockKind;
+      if (kind === "email") {
         await api.addSuppression({ email: value });
       } else {
         await api.addSuppression({ domain: value });
@@ -125,6 +132,8 @@ export default function LeadsPage() {
         <button type="submit">Search</button>
       </form>
       {error && <div className="error">{error}</div>}
+      <LeadImport campaigns={campaigns} onImported={() => void load(q.trim() || undefined)} />
+      <h2>Directory</h2>
       <table>
         <thead>
           <tr>
@@ -139,7 +148,7 @@ export default function LeadsPage() {
           {leads.length === 0 ? (
             <tr>
               <td colSpan={5} className="muted">
-                No leads. Import CSV on a campaign, or use Sheets / Apollo / Clay ingest.
+                No leads yet. Import a CSV or a connector above.
               </td>
             </tr>
           ) : (
@@ -172,6 +181,11 @@ export default function LeadsPage() {
       <h2>Suppressions</h2>
       <p className="muted">Emails and domains stay blocked on future imports, even if the lead is not in the list yet.</p>
       <form className="row-actions" onSubmit={onSuppress} style={{ marginBottom: "0.75rem" }}>
+        <select value={blockKind} onChange={(e) => setBlockKind(e.target.value as typeof blockKind)}>
+          <option value="auto">Auto (email or domain)</option>
+          <option value="email">Email</option>
+          <option value="domain">Domain</option>
+        </select>
         <input
           value={block}
           onChange={(e) => setBlock(e.target.value)}
@@ -249,7 +263,9 @@ export default function LeadsPage() {
             {verifyRows.map((r) => (
               <tr key={r.email}>
                 <td>{r.email}</td>
-                <td>{r.ok ? "yes" : "no"}</td>
+                <td>
+                  <StatusBadge ok={r.ok} on="Valid" off="Invalid" />
+                </td>
                 <td>{r.reason || (r.mx ? "mx" : "—")}</td>
               </tr>
             ))}

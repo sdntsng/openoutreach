@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, asArray, type Account } from "../api";
+import { HOURS, TIMEZONES } from "../connectors";
+import { FileDrop } from "../ui";
 
 type Step = "details" | "leads" | "sequence" | "preview" | "activate";
 const STEPS: Step[] = ["details", "leads", "sequence", "preview", "activate"];
@@ -160,23 +162,43 @@ export default function CampaignCreatePage() {
           </label>
           <label>
             Send window start
-            <input value={windowStart} onChange={(e) => setWindowStart(e.target.value)} placeholder="09:00" />
+            <select value={windowStart} onChange={(e) => setWindowStart(e.target.value)}>
+              {HOURS.map((h) => (
+                <option key={`s-${h}`} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
           </label>
           <label>
             Send window end
-            <input value={windowEnd} onChange={(e) => setWindowEnd(e.target.value)} placeholder="17:00" />
+            <select value={windowEnd} onChange={(e) => setWindowEnd(e.target.value)}>
+              {HOURS.map((h) => (
+                <option key={`e-${h}`} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
           </label>
           <label>
             Timezone
-            <input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="UTC" />
+            <select value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+              {TIMEZONES.map((tz) => (
+                <option key={tz} value={tz}>
+                  {tz}
+                </option>
+              ))}
+            </select>
           </label>
-          <label className="row">
-            <input
-              type="checkbox"
-              checked={openTracking}
-              onChange={(e) => setOpenTracking(e.target.checked)}
-            />
-            Approx. open tracking (pixel; never blocks send)
+          <label>
+            Approx. open tracking
+            <select
+              value={openTracking ? "on" : "off"}
+              onChange={(e) => setOpenTracking(e.target.value === "on")}
+            >
+              <option value="off">Off</option>
+              <option value="on">On (pixel; never blocks send)</option>
+            </select>
           </label>
           <fieldset>
             <legend>Sending accounts</legend>
@@ -199,8 +221,16 @@ export default function CampaignCreatePage() {
 
       {step === "leads" && (
         <form className="card stack" onSubmit={onLeads}>
+          <p className="muted">
+            Upload a file or paste CSV. Apollo / Sheets / Clay are on{" "}
+            <Link to="/integrations">Integrations</Link>, then import from the campaign.
+          </p>
+          <FileDrop
+            label="Upload CSV"
+            onText={(text) => setCsv(text)}
+          />
           <label>
-            Leads CSV
+            Or paste CSV
             <textarea rows={10} value={csv} onChange={(e) => setCsv(e.target.value)} />
           </label>
           <button type="submit" disabled={busy}>
