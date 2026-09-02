@@ -8,6 +8,7 @@ import InboxPage from "./pages/InboxPage";
 import LeadsPage from "./pages/LeadsPage";
 import AccountsPage from "./pages/AccountsPage";
 import SettingsPage from "./pages/SettingsPage";
+import IntegrationsPage from "./pages/IntegrationsPage";
 import SignInPage from "./pages/SignInPage";
 import SignUpPage from "./pages/SignUpPage";
 
@@ -19,6 +20,7 @@ const NAV_MAIL = [
 const NAV_SETUP = [
   { to: "/leads", label: "Leads" },
   { to: "/accounts", label: "Sending Accounts" },
+  { to: "/integrations", label: "Integrations" },
   { to: "/settings", label: "Settings" },
 ];
 
@@ -123,6 +125,7 @@ function AuthedShell() {
           <Route path="/inbox" element={<InboxPage />} />
           <Route path="/leads" element={<LeadsPage />} />
           <Route path="/accounts" element={<AccountsPage />} />
+          <Route path="/integrations" element={<IntegrationsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>

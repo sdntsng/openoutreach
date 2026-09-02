@@ -134,14 +134,12 @@ Implement [#7](https://github.com/sdntsng/openoutreach/issues/7):
 - Table `integration_credentials` (workspace_id, provider, name, encrypted_secret, metadata, status)
 - Reuse `CREDENTIAL_ENCRYPTION_KEY` / vault pattern from `internal/hosted/vault.go`
 - API: CRUD + `POST .../test` (never echo secrets)
-- Expand `web/src/pages/SettingsPage.tsx` into sections:
-  - **Workspace** (existing)
-  - **Sending** — links to Accounts; shows which send providers are operator-enabled
-  - **Integrations** — Apollo / Clay / webhook secrets; masked keys; Test connection
-  - **MCP** — show whether bearer is configured (boolean only); copy endpoint URL
-  - **Auth** — show `AUTH_MODE` (read-only from whoami/capabilities)
+- Dashboard **Integrations** (`/integrations`) is the one-stop shop: send OAuth/SMTP/API mailers, lead sources, outbound/warmup keys. Secrets are encrypted; UI shows last-four only.
+- **Sending Accounts** lists connected mailboxes and branded connectors that deep-link to Integrations.
+- **Leads** import is CSV file or a connector (Apollo / Sheets / Clay), into a campaign. Never activates.
+- **Settings** keeps workspace, MCP, auth, and operator flags — keys are not edited there.
 
-Accounts page stays the place to **connect mailboxes**; Settings owns **API keys and feature indicators**.
+Accounts page lists **connected mailboxes**; Integrations owns **API keys and connect forms**.
 
 ### Webhook ingest (Clay / generic)
 

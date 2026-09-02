@@ -13,8 +13,8 @@ const OPEN_TOOLTIP =
   "Approx. opens are inferred from tracking pixel loads. Image proxies, privacy features, and prefetch can inflate or deflate this number — treat it as directional, not exact.";
 
 const SETUP_STEPS: { action: string; label: string; to: string; done: (s: SetupStatus) => boolean }[] = [
-  { action: "connect_account", label: "Connect a sending account", to: "/accounts", done: (s) => s.accounts > 0 },
-  { action: "import_leads", label: "Import leads (CSV, Sheets, or Apollo)", to: "/leads", done: (s) => s.leads > 0 },
+  { action: "connect_account", label: "Connect a sending account", to: "/integrations?kind=send", done: (s) => s.accounts > 0 },
+  { action: "import_leads", label: "Import leads (CSV or a connector)", to: "/leads", done: (s) => s.leads > 0 },
   { action: "create_draft", label: "Create a draft campaign", to: "/campaigns/new", done: (s) => s.campaigns > 0 },
   {
     action: "preview_and_activate",

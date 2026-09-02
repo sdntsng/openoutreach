@@ -63,7 +63,7 @@ Visual reference: [docs/design/reference-aesthetic.png](docs/design/reference-ae
 
 Do **not** default to purple gradients, dark-first chrome, pill clusters, or dense newspaper layouts. Prefer Inter / system geometric sans over display serifs.
 
-Nav IA: Overview, Campaigns, Inbox, Leads, Sending Accounts, Settings.
+Nav IA: Overview, Campaigns, Inbox, Leads, Sending Accounts, Integrations, Settings.
 
 ## Testing
 
