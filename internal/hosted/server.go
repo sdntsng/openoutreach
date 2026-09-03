@@ -238,6 +238,8 @@ func (s *Server) routes() {
 
 	s.Mux.HandleFunc("GET /api/v1/overview", s.handleOverview)
 	s.Mux.HandleFunc("GET /api/v1/workspace", s.handleWorkspace)
+	s.Mux.HandleFunc("GET /api/v1/workspace/playbook", s.handleGetPlaybook)
+	s.Mux.HandleFunc("PUT /api/v1/workspace/playbook", s.handlePutPlaybook)
 	s.Mux.HandleFunc("POST /api/v1/internal/track/open", s.requireInternal(s.handleTrackOpen))
 	s.Mux.HandleFunc("POST /api/v1/internal/track/click", s.requireInternal(s.handleTrackClick))
 	s.Mux.HandleFunc("POST /api/v1/campaigns/{id}/open-tracking", s.handleSetOpenTracking)
