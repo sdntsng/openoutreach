@@ -77,7 +77,9 @@ Configured from the dashboard or vault. No new required env vars. `FEATURE_*` fo
 | Provider flags | Hide CF Email until wrangler secret | Defaults on; vault is the real switch | Web forms |
 | Preflight / windows / tracking | Hidden API | Create wizard + detail | Checkboxes |
 
-Still **not** built (and why): inbox placement SaaS, paid SuperSearch clone, LinkedIn steps, warmup sending, white-label agency SaaS, visual drag-and-drop sequencer (YAML + draft-sequence is enough for OSS).
+Still **not** built (and why): inbox placement SaaS, paid SuperSearch clone, LinkedIn steps, warmup sending, white-label agency SaaS, visual drag-and-drop sequencer (YAML + draft-sequence is enough for OSS), AutoGTM-style billing/autopilot (see [design/AUTOGTM-PARITY.md](design/AUTOGTM-PARITY.md)).
+
+Dashboard IA now matches that competitor’s setup/mailbox/campaigns grouping: dedicated suppress list, inbox boxes, workspace playbook (project / templates / schedule / targeting), campaign reply-rate + interested.
 
 ---
 
