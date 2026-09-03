@@ -86,10 +86,21 @@ export default function IntegrationsPage() {
         <h1>Integrations</h1>
       </div>
       <p className="muted">
-        One place for senders, lead sources, and event hooks. API keys are encrypted and only the
-        last four characters are shown. Sending Accounts lists connected mailboxes; this page is
-        where you connect them.
+        Route replies into tools you already use. Keys are encrypted; only the last four characters
+        are shown. Sending Accounts lists connected mailboxes.
       </p>
+      <section className="card featured-card">
+        <div>
+          <h2 style={{ margin: "0 0 0.35rem" }}>Outbound webhook</h2>
+          <p className="muted" style={{ margin: 0 }}>
+            New replies, bounces, and sends POST to your URL — Slack, Make, HubSpot workflows, or a
+            Zap. Paste the URL under Events.
+          </p>
+        </div>
+        <button type="button" onClick={() => open("outbound")}>
+          Connect webhook
+        </button>
+      </section>
       {error && <div className="error">{error}</div>}
       {note && <div className="panel">{note}</div>}
 
@@ -228,6 +239,26 @@ export default function IntegrationsPage() {
           </table>
         </>
       )}
+
+      <section className="card stack" style={{ marginTop: "1.5rem" }}>
+        <h2 style={{ margin: 0 }}>Build your own</h2>
+        <p className="muted">
+          Agents and scripts use the same API. Create stays draft — activate requires{" "}
+          <code>confirm: true</code>.
+        </p>
+        <pre className="code">{`GET /api/v1/inbox?box=needs
+GET /api/v1/campaigns
+POST /api/v1/campaigns/{id}/activate  {"confirm":true}`}</pre>
+        {caps?.mcp_endpoint ? (
+          <p className="muted">
+            MCP: <code>{caps.mcp_endpoint}</code> — bearer from Settings.
+          </p>
+        ) : (
+          <p className="muted">
+            MCP endpoint is on <Link to="/settings">Settings</Link>.
+          </p>
+        )}
+      </section>
     </div>
   );
 }

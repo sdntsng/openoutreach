@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type OverviewStats, type Period, type SetupStatus } from "../api";
+import { api, asArray, type Campaign, type OverviewStats, type Period, type SetupStatus } from "../api";
+import { CampaignTable } from "../CampaignTable";
 
 const PERIODS: { id: Period; label: string }[] = [
   { id: "today", label: "Today" },
@@ -34,6 +35,7 @@ export default function OverviewPage() {
   const [period, setPeriod] = useState<Period>("7d");
   const [stats, setStats] = useState<OverviewStats | null>(null);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -41,11 +43,16 @@ export default function OverviewPage() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    Promise.all([api.overview(period), api.setup().catch(() => null)])
-      .then(([data, s]) => {
+    Promise.all([
+      api.overview(period),
+      api.setup().catch(() => null),
+      api.listCampaigns().catch(() => ({ campaigns: [] as Campaign[] })),
+    ])
+      .then(([data, s, camps]) => {
         if (cancelled) return;
         setStats(data);
         setSetup(s);
+        setCampaigns(asArray(camps, "campaigns"));
       })
       .catch((err: Error) => {
         if (!cancelled) {
@@ -137,6 +144,8 @@ export default function OverviewPage() {
       <p className="muted" style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
         Hover <strong>Approx. opens</strong> for notes on image-proxy noise.
       </p>
+      <h2>Campaigns</h2>
+      <CampaignTable campaigns={campaigns} />
     </div>
   );
 }

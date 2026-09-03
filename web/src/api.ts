@@ -122,6 +122,7 @@ export interface Campaign {
   sent?: number;
   replies?: number;
   reply_rate?: number;
+  interested?: number;
   bounces?: number;
   approx_opens?: number;
   next_send?: string;
@@ -161,7 +162,36 @@ export interface InboxThread {
   subject?: string;
   latest_message?: string;
   classification?: string;
+  needs_reply?: boolean;
+  type?: string;
   timestamp?: string;
+}
+
+export interface InboxCounts {
+  needs: number;
+  replies: number;
+  sent: number;
+}
+
+export interface WorkspacePlaybook {
+  company?: string;
+  website?: string;
+  location?: string;
+  description?: string;
+  competitors?: string[];
+  offer?: string;
+  problem?: string;
+  example_clients?: string[];
+  keywords?: string[];
+  audience?: string;
+  geography?: string;
+  company_size?: string;
+  template_instructions?: string;
+  default_sequence_yaml?: string;
+  send_window_start?: string;
+  send_window_end?: string;
+  send_days?: string;
+  timezone?: string;
 }
 
 export interface ThreadMessage {
@@ -326,7 +356,10 @@ export const api = {
   removeAccount: (id: string | number) =>
     request<unknown>(`/accounts/${id}/remove`, { method: "POST", body: "{}" }),
 
-  listInbox: () => request<{ threads: InboxThread[] }>("/inbox"),
+  listInbox: (box?: string) => {
+    const qs = box ? `?box=${encodeURIComponent(box)}` : "";
+    return request<{ threads: InboxThread[]; counts?: InboxCounts; box?: string }>(`/inbox${qs}`);
+  },
 
   getThread: (campaignId: string | number, leadId: string | number) =>
     request<{ messages: ThreadMessage[] }>(`/threads/${campaignId}/${leadId}`),
@@ -347,6 +380,30 @@ export const api = {
     request<{ suggested_body?: string; classification?: string; send_allowed?: boolean }>(
       `/threads/${campaignId}/${leadId}/suggest-reply`,
     ),
+
+  classifyThread: (
+    campaignId: string | number,
+    leadId: string | number,
+    classification: string,
+  ) =>
+    request<{ status?: string; classification?: string }>(
+      `/threads/${campaignId}/${leadId}/classify`,
+      { method: "POST", body: JSON.stringify({ classification }) },
+    ),
+
+  draftSequence: (body: { icp?: string; offer?: string; tone?: string; step_count?: number; from_name?: string; campaign_id?: number }) =>
+    request<{ sequence_yaml?: string; preview?: unknown; step_count?: number }>("/agent/draft-sequence", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  getPlaybook: () => request<WorkspacePlaybook>("/workspace/playbook"),
+
+  putPlaybook: (body: Partial<WorkspacePlaybook>) =>
+    request<WorkspacePlaybook>("/workspace/playbook", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
 
   workspace: () =>
     request<{ workspace_id: string }>("/workspace"),
