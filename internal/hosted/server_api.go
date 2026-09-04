@@ -342,6 +342,8 @@ func (s *Server) handleListCampaigns(w http.ResponseWriter, r *http.Request) {
 			(SELECT COUNT(*) FROM events e WHERE e.campaign_id = c.id AND e.type = 'reply') AS replies,
 			(SELECT COUNT(*) FROM events e WHERE e.campaign_id = c.id AND e.type = 'bounce') AS bounces,
 			(SELECT COUNT(*) FROM events e WHERE e.campaign_id = c.id AND e.type = 'unique_open') AS opens,
+			(SELECT COUNT(DISTINCT rc.lead_id) FROM reply_classifications rc
+				WHERE rc.campaign_id = c.id AND lower(rc.classification) IN ('positive', 'interested', 'hot')) AS interested,
 			(SELECT MIN(ss.send_at) FROM scheduled_sends ss WHERE ss.campaign_id = c.id AND ss.status = 'pending') AS next_send
 		FROM campaigns c
 		WHERE c.workspace_id = ?
@@ -360,6 +362,7 @@ func (s *Server) handleListCampaigns(w http.ResponseWriter, r *http.Request) {
 		Replies     int     `json:"replies"`
 		Bounces     int     `json:"bounces"`
 		ApproxOpens int     `json:"approx_opens"`
+		Interested  int     `json:"interested"`
 		ReplyRate   float64 `json:"reply_rate"`
 		NextSend    *string `json:"next_send,omitempty"`
 		CreatedAt   string  `json:"created_at"`
@@ -368,8 +371,8 @@ func (s *Server) handleListCampaigns(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item row
 		var created time.Time
-		var next sql.NullTime
-		if err := rows.Scan(&item.ID, &item.Name, &item.Status, &created, &item.Leads, &item.Sent, &item.Replies, &item.Bounces, &item.ApproxOpens, &next); err != nil {
+		var next sql.NullString
+		if err := rows.Scan(&item.ID, &item.Name, &item.Status, &created, &item.Leads, &item.Sent, &item.Replies, &item.Bounces, &item.ApproxOpens, &item.Interested, &next); err != nil {
 			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
@@ -377,9 +380,14 @@ func (s *Server) handleListCampaigns(w http.ResponseWriter, r *http.Request) {
 		if item.Sent > 0 {
 			item.ReplyRate = float64(item.Replies) / float64(item.Sent) * 100
 		}
-		if next.Valid {
-			v := next.Time.UTC().Format(time.RFC3339)
-			item.NextSend = &v
+		if next.Valid && next.String != "" {
+			if t, err := time.Parse(time.RFC3339, next.String); err == nil {
+				v := t.UTC().Format(time.RFC3339)
+				item.NextSend = &v
+			} else {
+				v := next.String
+				item.NextSend = &v
+			}
 		}
 		list = append(list, item)
 	}
@@ -480,7 +488,21 @@ func (s *Server) handleGetCampaign(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "status_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: info})
+	var id int64
+	var seqContent string
+	_ = queryRow(s.Store.DB, `SELECT id, COALESCE(sequence_content, '') FROM campaigns WHERE name = ?`, name).Scan(&id, &seqContent)
+	raw, _ := json.Marshal(info)
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	if out == nil {
+		out = map[string]any{}
+	}
+	out["id"] = id
+	if strings.TrimSpace(seqContent) != "" {
+		out["sequence"] = seqContent
+		out["sequence_yaml"] = seqContent
+	}
+	writeJSON(w, http.StatusOK, envelope{Data: out})
 }
 
 func (s *Server) handleActivateCampaign(w http.ResponseWriter, r *http.Request) {
@@ -677,7 +699,16 @@ func (s *Server) handleRemoveLead(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	ws := s.workspaceFromRequest(r)
-	rows, err := query(s.Store.DB, `
+	box := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("box")))
+	if box == "" || box == "got" || box == "inbox" {
+		box = "replies"
+	}
+	direction := "inbound"
+	if box == "sent" {
+		direction = "outbound"
+	}
+
+	q := `
 		SELECT em.campaign_id, em.lead_id, l.email, l.company, c.name, a.email,
 			em.subject, em.snippet, em.occurred_at, em.type,
 			COALESCE(rc.classification, '')
@@ -686,9 +717,25 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		JOIN leads l ON l.id = em.lead_id
 		JOIN accounts a ON a.id = em.account_id
 		LEFT JOIN reply_classifications rc ON rc.campaign_id = em.campaign_id AND rc.lead_id = em.lead_id
-		WHERE c.workspace_id = ? AND em.direction = 'inbound'
-		ORDER BY em.occurred_at DESC
-		LIMIT 100`, ws)
+		WHERE c.workspace_id = ? AND em.direction = ?
+		AND em.id IN (
+			SELECT MAX(em2.id) FROM email_messages em2
+			JOIN campaigns c2 ON c2.id = em2.campaign_id
+			WHERE c2.workspace_id = ? AND em2.direction = ?
+			GROUP BY em2.campaign_id, em2.lead_id
+		)`
+	args := []any{ws, direction, ws, direction}
+	if box == "needs" {
+		q += `
+		AND NOT EXISTS (
+			SELECT 1 FROM email_messages o
+			WHERE o.campaign_id = em.campaign_id AND o.lead_id = em.lead_id
+			AND o.direction = 'outbound' AND o.occurred_at > em.occurred_at
+		)`
+	}
+	q += ` ORDER BY em.occurred_at DESC LIMIT 100`
+
+	rows, err := query(s.Store.DB, q, args...)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
@@ -705,6 +752,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		LatestMessage  string `json:"latest_message"`
 		Classification string `json:"classification"`
 		Type           string `json:"type"`
+		NeedsReply     bool   `json:"needs_reply"`
 		Timestamp      string `json:"timestamp"`
 	}
 	var list []item
@@ -717,12 +765,70 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		it.Timestamp = occurred.UTC().Format(time.RFC3339)
+		it.NeedsReply = box == "needs" || (box != "sent" && !hasLaterOutbound(s.Store.DB, it.CampaignID, it.LeadID, occurred))
 		list = append(list, it)
 	}
 	if list == nil {
 		list = []item{}
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{"threads": list}})
+
+	var needs, replies, sent int
+	_ = queryRow(s.Store.DB, `
+		SELECT COUNT(*) FROM (
+			SELECT em.campaign_id, em.lead_id FROM email_messages em
+			JOIN campaigns c ON c.id = em.campaign_id
+			WHERE c.workspace_id = ? AND em.direction = 'inbound'
+			AND em.id IN (
+				SELECT MAX(em2.id) FROM email_messages em2
+				JOIN campaigns c2 ON c2.id = em2.campaign_id
+				WHERE c2.workspace_id = ? AND em2.direction = 'inbound'
+				GROUP BY em2.campaign_id, em2.lead_id
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM email_messages o
+				WHERE o.campaign_id = em.campaign_id AND o.lead_id = em.lead_id
+				AND o.direction = 'outbound' AND o.occurred_at > em.occurred_at
+			)
+		)`, ws, ws).Scan(&needs)
+	_ = queryRow(s.Store.DB, `
+		SELECT COUNT(*) FROM (
+			SELECT em.campaign_id, em.lead_id FROM email_messages em
+			JOIN campaigns c ON c.id = em.campaign_id
+			WHERE c.workspace_id = ? AND em.direction = 'inbound'
+			AND em.id IN (
+				SELECT MAX(em2.id) FROM email_messages em2
+				JOIN campaigns c2 ON c2.id = em2.campaign_id
+				WHERE c2.workspace_id = ? AND em2.direction = 'inbound'
+				GROUP BY em2.campaign_id, em2.lead_id
+			)
+		)`, ws, ws).Scan(&replies)
+	_ = queryRow(s.Store.DB, `
+		SELECT COUNT(*) FROM (
+			SELECT em.campaign_id, em.lead_id FROM email_messages em
+			JOIN campaigns c ON c.id = em.campaign_id
+			WHERE c.workspace_id = ? AND em.direction = 'outbound'
+			AND em.id IN (
+				SELECT MAX(em2.id) FROM email_messages em2
+				JOIN campaigns c2 ON c2.id = em2.campaign_id
+				WHERE c2.workspace_id = ? AND em2.direction = 'outbound'
+				GROUP BY em2.campaign_id, em2.lead_id
+			)
+		)`, ws, ws).Scan(&sent)
+
+	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
+		"threads": list,
+		"box":     box,
+		"counts":  map[string]int{"needs": needs, "replies": replies, "sent": sent},
+	}})
+}
+
+func hasLaterOutbound(db *sql.DB, campaignID, leadID int64, after time.Time) bool {
+	var n int
+	_ = queryRow(db, `
+		SELECT COUNT(*) FROM email_messages
+		WHERE campaign_id = ? AND lead_id = ? AND direction = 'outbound' AND occurred_at > ?`,
+		campaignID, leadID, after).Scan(&n)
+	return n > 0
 }
 
 func (s *Server) handleGetThread(w http.ResponseWriter, r *http.Request) {

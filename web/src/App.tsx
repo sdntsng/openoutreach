@@ -1,5 +1,7 @@
-import { NavLink, Navigate, Route, Routes, useSearchParams } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
+import { useEffect, useState, type ReactNode } from "react";
 import { safeRedirect, signOut, useAuth } from "./auth-client";
+import { api, asArray, type Campaign, type InboxCounts } from "./api";
 import OverviewPage from "./pages/OverviewPage";
 import CampaignsPage from "./pages/CampaignsPage";
 import CampaignDetailPage from "./pages/CampaignDetailPage";
@@ -9,48 +11,30 @@ import LeadsPage from "./pages/LeadsPage";
 import AccountsPage from "./pages/AccountsPage";
 import SettingsPage from "./pages/SettingsPage";
 import IntegrationsPage from "./pages/IntegrationsPage";
+import SuppressionsPage from "./pages/SuppressionsPage";
+import ProjectPage from "./pages/ProjectPage";
+import TemplatesPage from "./pages/TemplatesPage";
+import SchedulePage from "./pages/SchedulePage";
+import TargetingPage from "./pages/TargetingPage";
 import SignInPage from "./pages/SignInPage";
 import SignUpPage from "./pages/SignUpPage";
 
-const NAV_MAIN = [{ to: "/", label: "Overview", end: true as const }];
-const NAV_MAIL = [
-  { to: "/inbox", label: "Inbox" },
-  { to: "/campaigns", label: "Campaigns" },
-];
-const NAV_SETUP = [
-  { to: "/leads", label: "Leads" },
-  { to: "/accounts", label: "Sending Accounts" },
-  { to: "/integrations", label: "Integrations" },
-  { to: "/settings", label: "Settings" },
-];
-
 function NavGroup({
   label,
-  items,
+  children,
 }: {
   label: string;
-  items: Array<{ to: string; label: string; end?: boolean }>;
+  children: ReactNode;
 }) {
   return (
     <div className="nav-section">
       <div className="nav-label">{label}</div>
-      <nav className="nav">
-        {items.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.end}
-            className={({ isActive }) => (isActive ? "active" : undefined)}
-          >
-            {item.label}
-          </NavLink>
-        ))}
-      </nav>
+      <nav className="nav">{children}</nav>
     </div>
   );
 }
 
-function GuestOnly({ children }: { children: React.ReactNode }) {
+function GuestOnly({ children }: { children: ReactNode }) {
   const auth = useAuth();
   const [params] = useSearchParams();
   if (auth.pending) {
@@ -71,6 +55,21 @@ function GuestOnly({ children }: { children: React.ReactNode }) {
 
 function AuthedShell() {
   const auth = useAuth();
+  const location = useLocation();
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [inboxCounts, setInboxCounts] = useState<InboxCounts | null>(null);
+
+  useEffect(() => {
+    api
+      .listCampaigns()
+      .then((data) => setCampaigns(asArray(data, "campaigns")))
+      .catch(() => setCampaigns([]));
+    api
+      .listInbox("needs")
+      .then((d) => setInboxCounts(d.counts || null))
+      .catch(() => setInboxCounts(null));
+  }, [location.pathname]);
+
   if (auth.pending) {
     return (
       <div className="auth-shell">
@@ -97,24 +96,99 @@ function AuthedShell() {
   }
 
   const showUser = Boolean(auth.user && auth.mode !== "local_noauth");
+  const needs = inboxCounts?.needs ?? 0;
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">OpenOutreach</div>
-        <NavGroup label="Main" items={NAV_MAIN} />
-        <NavGroup label="Mailbox" items={NAV_MAIL} />
-        <NavGroup label="Setup" items={NAV_SETUP} />
-        {showUser ? (
-          <div className="sidebar-foot">
+        <NavGroup label="Main">
+          <NavLink to="/" end className={({ isActive }) => (isActive ? "active" : undefined)}>
+            Overview
+          </NavLink>
+        </NavGroup>
+        <NavGroup label="Mailbox">
+          <NavLink
+            to="/inbox"
+            end
+            className={({ isActive }) => {
+              const sent = new URLSearchParams(location.search).get("box") === "sent";
+              return isActive && !sent ? "active" : undefined;
+            }}
+          >
+            Inbox
+            {needs > 0 ? <span className="nav-badge">{needs}</span> : null}
+          </NavLink>
+          <NavLink
+            to="/inbox?box=sent"
+            className={() =>
+              location.pathname === "/inbox" && new URLSearchParams(location.search).get("box") === "sent"
+                ? "active"
+                : undefined
+            }
+          >
+            Sent
+          </NavLink>
+        </NavGroup>
+        <NavGroup label="Setup">
+          <NavLink to="/project" className={({ isActive }) => (isActive ? "active" : undefined)}>
+            Project
+          </NavLink>
+          <NavLink to="/templates" className={({ isActive }) => (isActive ? "active" : undefined)}>
+            Email templates
+          </NavLink>
+          <NavLink to="/schedule" className={({ isActive }) => (isActive ? "active" : undefined)}>
+            Sending schedule
+          </NavLink>
+          <NavLink to="/targeting" className={({ isActive }) => (isActive ? "active" : undefined)}>
+            Targeting
+          </NavLink>
+          <NavLink to="/integrations" className={({ isActive }) => (isActive ? "active" : undefined)}>
+            Integrations
+          </NavLink>
+          <NavLink to="/suppressions" className={({ isActive }) => (isActive ? "active" : undefined)}>
+            Suppress list
+          </NavLink>
+          <NavLink to="/leads" className={({ isActive }) => (isActive ? "active" : undefined)}>
+            Leads
+          </NavLink>
+          <NavLink to="/accounts" className={({ isActive }) => (isActive ? "active" : undefined)}>
+            Sending Accounts
+          </NavLink>
+        </NavGroup>
+        <NavGroup label="Campaigns">
+          {campaigns.slice(0, 8).map((c) => (
+            <NavLink
+              key={String(c.id)}
+              to={`/campaigns/${c.id}`}
+              className={({ isActive }) => (isActive ? "active" : undefined)}
+            >
+              <span className={`nav-dot status-${(c.status || "").toLowerCase()}`} />
+              {c.name}
+            </NavLink>
+          ))}
+          <NavLink to="/campaigns/new" className={({ isActive }) => (isActive ? "active nav-cta" : "nav-cta")}>
+            + New campaign
+          </NavLink>
+          <NavLink to="/campaigns" end className={({ isActive }) => (isActive ? "active" : undefined)}>
+            All campaigns
+          </NavLink>
+        </NavGroup>
+        <div className="sidebar-foot">
+          {showUser ? (
             <div className="sidebar-user" title={auth.user?.email}>
               {auth.user?.name || auth.user?.email}
             </div>
+          ) : null}
+          <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : undefined)}>
+            Settings
+          </NavLink>
+          {showUser ? (
             <button type="button" className="secondary" onClick={() => signOut(auth.mode)}>
               Sign out
             </button>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
       </aside>
       <main className="main">
         <Routes>
@@ -127,6 +201,11 @@ function AuthedShell() {
           <Route path="/accounts" element={<AccountsPage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/suppressions" element={<SuppressionsPage />} />
+          <Route path="/project" element={<ProjectPage />} />
+          <Route path="/templates" element={<TemplatesPage />} />
+          <Route path="/schedule" element={<SchedulePage />} />
+          <Route path="/targeting" element={<TargetingPage />} />
         </Routes>
       </main>
     </div>

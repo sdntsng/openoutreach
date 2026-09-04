@@ -148,7 +148,7 @@ func (s *Server) handleAddSuppression(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.CSV != "" && value == "" {
-		added, skipped, err := s.addSuppressionsFromCSV(ws, req.CSV)
+		added, skipped, err := s.addSuppressionsFromCSV(ws, req.CSV, kind)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "import_failed", err.Error())
 			return
@@ -208,9 +208,9 @@ func (s *Server) handleDeleteSuppression(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleVerifyLeads(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	var req struct {
-		CSV     string   `json:"csv"`
-		Emails  []string `json:"emails"`
-		Email   string   `json:"email"`
+		CSV    string   `json:"csv"`
+		Emails []string `json:"emails"`
+		Email  string   `json:"email"`
 	}
 	_ = json.Unmarshal(body, &req)
 	emails := append([]string{}, req.Emails...)
@@ -518,13 +518,44 @@ func (s *Server) upsertSuppression(ws, kind, value string) (int64, error) {
 	return id, nil
 }
 
-func (s *Server) addSuppressionsFromCSV(ws, raw string) (added, skipped int, err error) {
-	records, _, err := internal.ParseLeadsCSVFromReader(strings.NewReader(raw))
-	if err != nil {
-		// allow a bare list of emails
+func (s *Server) addSuppressionsFromCSV(ws, raw, kindHint string) (added, skipped int, err error) {
+	kindHint = strings.ToLower(strings.TrimSpace(kindHint))
+	if kindHint == "domain" {
 		for _, line := range strings.Split(raw, "\n") {
-			email := strings.ToLower(strings.TrimSpace(strings.Split(line, ",")[0]))
-			if email == "" || email == "email" || !strings.Contains(email, "@") {
+			token := strings.ToLower(strings.TrimSpace(strings.Split(line, ",")[0]))
+			token = strings.TrimPrefix(strings.ReplaceAll(token, "@", ""), "www.")
+			if token == "" || token == "domain" || token == "domains" || strings.Contains(token, " ") {
+				continue
+			}
+			if _, e := s.upsertSuppression(ws, "domain", token); e != nil {
+				return added, skipped, e
+			}
+			added++
+		}
+		return added, skipped, nil
+	}
+	records, _, parseErr := internal.ParseLeadsCSVFromReader(strings.NewReader(raw))
+	if parseErr == nil {
+		for _, rec := range records {
+			email := strings.ToLower(strings.TrimSpace(rec.Fields["email"]))
+			domain := strings.ToLower(strings.TrimSpace(rec.Fields["domain"]))
+			if kindHint == "domain" || (email == "" && domain != "") {
+				value := strings.TrimPrefix(domain, "@")
+				if value == "" {
+					value = strings.TrimPrefix(email, "@")
+				}
+				if value == "" || strings.Contains(value, " ") {
+					skipped++
+					continue
+				}
+				if _, e := s.upsertSuppression(ws, "domain", value); e != nil {
+					return added, skipped, e
+				}
+				added++
+				continue
+			}
+			if email == "" {
+				skipped++
 				continue
 			}
 			if _, e := s.upsertSuppression(ws, "email", email); e != nil {
@@ -535,16 +566,36 @@ func (s *Server) addSuppressionsFromCSV(ws, raw string) (added, skipped int, err
 		}
 		return added, skipped, nil
 	}
-	for _, rec := range records {
-		email := strings.ToLower(strings.TrimSpace(rec.Fields["email"]))
-		if email == "" {
+	for i, line := range strings.Split(raw, "\n") {
+		token := strings.ToLower(strings.TrimSpace(strings.Split(line, ",")[0]))
+		token = strings.TrimPrefix(token, "@")
+		if token == "" || token == "email" || token == "domain" {
+			continue
+		}
+		if i == 0 && (strings.Contains(token, "email") || strings.Contains(token, "domain")) {
+			continue
+		}
+		kind := kindHint
+		if kind == "" {
+			if strings.Contains(token, "@") {
+				kind = "email"
+			} else {
+				kind = "domain"
+			}
+		}
+		if kind == "email" && !strings.Contains(token, "@") {
 			skipped++
 			continue
 		}
-		if _, e := s.upsertSuppression(ws, "email", email); e != nil {
+		if kind == "domain" {
+			token = strings.TrimPrefix(strings.ReplaceAll(token, "@", ""), "www.")
+		}
+		if _, e := s.upsertSuppression(ws, kind, token); e != nil {
 			return added, skipped, e
 		}
-		_, _ = engine.BlacklistLead(s.Store.DB, email)
+		if kind == "email" {
+			_, _ = engine.BlacklistLead(s.Store.DB, token)
+		}
 		added++
 	}
 	return added, skipped, nil

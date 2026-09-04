@@ -7,7 +7,7 @@ Product architecture and phased roadmap for lead sources, send providers, MCP de
 | Surface | Today |
 |---------|--------|
 | **Send** | Gmail OAuth, hosted SMTP/IMAP, Microsoft Graph OAuth (when `MICROSOFT_CLIENT_*` set). Resend/SES stubs (SES via SMTP endpoint). |
-| **Leads** | CSV + Sheets + Apollo + Clay ingest + **suppressions** (honored on import) + **verify** (syntax/MX/disposable) + CSV export + `?q=` search. |
+| **Leads** | CSV + Sheets + Apollo + Clay ingest + **suppress list** (`/suppressions`, honored on import) + **verify** (syntax/MX/disposable) + CSV export + `?q=` search. |
 | **Settings** | Capabilities catalog, vault, **outbound webhook URL**, MCP/auth indicators. First-run checklist on Overview (`GET /api/v1/setup`). |
 | **MCP** | Campaign tools + clone/PATCH + suppressions + setup + capabilities/integrations/Apollo/Sheets/draft/preflight/suggest-reply. |
 | **Vault** | `google_credentials`, `microsoft_credentials`, `integration_credentials` (AES via `CREDENTIAL_ENCRYPTION_KEY`). |

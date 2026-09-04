@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { Connector } from "./connectors";
 
@@ -62,28 +63,80 @@ export function SecretField({
 
 export function FileDrop({
   label,
+  hint,
   accept = ".csv,text/csv,text/plain",
   onText,
 }: {
   label: string;
+  hint?: string;
   accept?: string;
   onText: (text: string, filename: string) => void;
 }) {
+  function take(file: File | undefined) {
+    if (!file) return;
+    void file.text().then((text) => onText(text, file.name));
+  }
   return (
-    <label className="file-drop">
-      {label}
+    <label
+      className="file-drop"
+      onDragOver={(e) => {
+        e.preventDefault();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        take(e.dataTransfer.files?.[0]);
+      }}
+    >
+      <strong>{label}</strong>
       <input
         type="file"
         accept={accept}
         onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (!file) return;
-          void file.text().then((text) => onText(text, file.name));
+          take(e.target.files?.[0]);
           e.target.value = "";
         }}
       />
-      <span className="muted">Choose a .csv file or drop it here</span>
+      <span className="muted">{hint || "Drop CSV or click to upload"}</span>
     </label>
+  );
+}
+
+export function PageIntro({ title, children }: { title: string; children?: ReactNode }) {
+  return (
+    <div className="page-intro">
+      <h1>{title}</h1>
+      {children ? <p className="muted page-lede">{children}</p> : null}
+    </div>
+  );
+}
+
+export function StatusChip({ status }: { status: string }) {
+  const s = (status || "").toLowerCase();
+  const kind = s === "active" ? "ok" : s === "paused" ? "warn" : s === "draft" ? "off" : "off";
+  return <span className={`badge badge-${kind}`}>{status || "—"}</span>;
+}
+
+export function PillList({
+  items,
+  onRemove,
+}: {
+  items: string[];
+  onRemove?: (value: string) => void;
+}) {
+  if (!items.length) return null;
+  return (
+    <div className="pill-row">
+      {items.map((item) => (
+        <span key={item} className="pill">
+          {item}
+          {onRemove ? (
+            <button type="button" className="pill-x" onClick={() => onRemove(item)} aria-label={`Remove ${item}`}>
+              ×
+            </button>
+          ) : null}
+        </span>
+      ))}
+    </div>
   );
 }
 

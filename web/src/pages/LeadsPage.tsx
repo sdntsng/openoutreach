@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, asArray, type Campaign, type Lead, type Suppression, type VerifyResult } from "../api";
+import { Link } from "react-router-dom";
+import { api, asArray, type Campaign, type Lead, type VerifyResult } from "../api";
 import { LeadImport } from "../LeadImport";
 import { StatusBadge } from "../ui";
 
@@ -17,9 +18,6 @@ export default function LeadsPage() {
   const [q, setQ] = useState("");
   const [leads, setLeads] = useState<Lead[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [suppressions, setSuppressions] = useState<Suppression[]>([]);
-  const [block, setBlock] = useState("");
-  const [blockKind, setBlockKind] = useState<"auto" | "email" | "domain">("auto");
   const [verifyText, setVerifyText] = useState("");
   const [verifyRows, setVerifyRows] = useState<VerifyResult[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -28,13 +26,11 @@ export default function LeadsPage() {
   async function load(query?: string) {
     setError(null);
     try {
-      const [data, sup, camps] = await Promise.all([
+      const [data, camps] = await Promise.all([
         api.listLeads(query),
-        api.listSuppressions().catch(() => ({ suppressions: [] as Suppression[] })),
         api.listCampaigns().catch(() => ({ campaigns: [] as Campaign[] })),
       ]);
       setLeads(asArray(data, "leads"));
-      setSuppressions(asArray(sup, "suppressions"));
       setCampaigns(asArray(camps, "campaigns"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -55,28 +51,6 @@ export default function LeadsPage() {
     setBusy(true);
     try {
       await api.blacklistLead(id);
-      await load(q.trim() || undefined);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onSuppress(e: FormEvent) {
-    e.preventDefault();
-    const value = block.trim().toLowerCase();
-    if (!value) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const kind = blockKind === "auto" ? (value.includes("@") ? "email" : "domain") : blockKind;
-      if (kind === "email") {
-        await api.addSuppression({ email: value });
-      } else {
-        await api.addSuppression({ domain: value });
-      }
-      setBlock("");
       await load(q.trim() || undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -178,64 +152,9 @@ export default function LeadsPage() {
         </tbody>
       </table>
 
-      <h2>Suppressions</h2>
-      <p className="muted">Emails and domains stay blocked on future imports, even if the lead is not in the list yet.</p>
-      <form className="row-actions" onSubmit={onSuppress} style={{ marginBottom: "0.75rem" }}>
-        <select value={blockKind} onChange={(e) => setBlockKind(e.target.value as typeof blockKind)}>
-          <option value="auto">Auto (email or domain)</option>
-          <option value="email">Email</option>
-          <option value="domain">Domain</option>
-        </select>
-        <input
-          value={block}
-          onChange={(e) => setBlock(e.target.value)}
-          placeholder="email@domain.com or example.com"
-          style={{ minWidth: 260 }}
-        />
-        <button type="submit" disabled={busy || !block.trim()}>
-          Add
-        </button>
-      </form>
-      <table>
-        <thead>
-          <tr>
-            <th>Kind</th>
-            <th>Value</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {suppressions.length === 0 ? (
-            <tr>
-              <td colSpan={3} className="muted">
-                No suppressions yet.
-              </td>
-            </tr>
-          ) : (
-            suppressions.map((s) => (
-              <tr key={s.id}>
-                <td>{s.kind}</td>
-                <td>{s.value}</td>
-                <td>
-                  <button
-                    type="button"
-                    className="secondary"
-                    disabled={busy}
-                    onClick={() => {
-                      void api
-                        .deleteSuppression(s.id)
-                        .then(() => load(q.trim() || undefined))
-                        .catch((err: Error) => setError(err.message));
-                    }}
-                  >
-                    Remove
-                  </button>
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+      <p className="muted">
+        Org-wide blocks live on the <Link to="/suppressions">suppress list</Link>.
+      </p>
 
       <h2>Verify emails</h2>
       <p className="muted">Syntax, disposable-domain list, and public MX. No API key.</p>
