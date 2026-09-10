@@ -2,10 +2,13 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, type InboxCounts, type InboxThread, type ThreadMessage } from "../api";
 import { isHot } from "../defaults";
+import { FeatureLock } from "../ui";
+import { useWorkspace } from "../workspace";
 
 type Box = "needs" | "replies" | "sent";
 
 export default function InboxPage() {
+  const ws = useWorkspace();
   const [params, setParams] = useSearchParams();
   const box = (params.get("box") as Box) || "needs";
   const [threads, setThreads] = useState<InboxThread[]>([]);
@@ -106,6 +109,7 @@ export default function InboxPage() {
     <div>
       <h1>Inbox</h1>
       {error && <div className="error">{error}</div>}
+      <FeatureLock ready={ws.hasSender} gate="sender">
       <div className="tabs">
         {(
           [
@@ -210,6 +214,7 @@ export default function InboxPage() {
           )}
         </div>
       </div>
+      </FeatureLock>
     </div>
   );
 }

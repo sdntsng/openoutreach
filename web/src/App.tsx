@@ -18,6 +18,7 @@ import SchedulePage from "./pages/SchedulePage";
 import TargetingPage from "./pages/TargetingPage";
 import SignInPage from "./pages/SignInPage";
 import SignUpPage from "./pages/SignUpPage";
+import { WorkspaceProvider, useWorkspace } from "./workspace";
 
 function NavGroup({
   label,
@@ -54,12 +55,22 @@ function GuestOnly({ children }: { children: ReactNode }) {
 }
 
 function AuthedShell() {
+  return (
+    <WorkspaceProvider>
+      <AuthedApp />
+    </WorkspaceProvider>
+  );
+}
+
+function AuthedApp() {
   const auth = useAuth();
+  const ws = useWorkspace();
   const location = useLocation();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [inboxCounts, setInboxCounts] = useState<InboxCounts | null>(null);
 
   useEffect(() => {
+    ws.refresh();
     api
       .listCampaigns()
       .then((data) => setCampaigns(asArray(data, "campaigns")))
@@ -113,7 +124,8 @@ function AuthedShell() {
             end
             className={({ isActive }) => {
               const sent = new URLSearchParams(location.search).get("box") === "sent";
-              return isActive && !sent ? "active" : undefined;
+              const on = isActive && !sent ? "active" : "";
+              return `${on}${ws.hasSender ? "" : " is-gated"}`.trim() || undefined;
             }}
           >
             Inbox
@@ -121,11 +133,13 @@ function AuthedShell() {
           </NavLink>
           <NavLink
             to="/inbox?box=sent"
-            className={() =>
-              location.pathname === "/inbox" && new URLSearchParams(location.search).get("box") === "sent"
-                ? "active"
-                : undefined
-            }
+            className={() => {
+              const on =
+                location.pathname === "/inbox" && new URLSearchParams(location.search).get("box") === "sent"
+                  ? "active"
+                  : "";
+              return `${on}${ws.hasSender ? "" : " is-gated"}`.trim() || undefined;
+            }}
           >
             Sent
           </NavLink>
@@ -167,7 +181,12 @@ function AuthedShell() {
               {c.name}
             </NavLink>
           ))}
-          <NavLink to="/campaigns/new" className={({ isActive }) => (isActive ? "active nav-cta" : "nav-cta")}>
+          <NavLink
+            to="/campaigns/new"
+            className={({ isActive }) =>
+              `${isActive ? "active nav-cta" : "nav-cta"}${ws.hasSender ? "" : " is-gated"}`
+            }
+          >
             + New campaign
           </NavLink>
           <NavLink to="/campaigns" end className={({ isActive }) => (isActive ? "active" : undefined)}>

@@ -86,8 +86,8 @@ export default function IntegrationsPage() {
         <h1>Integrations</h1>
       </div>
       <p className="muted">
-        Route replies into tools you already use. Keys are encrypted; only the last four characters
-        are shown. Sending Accounts lists connected mailboxes.
+        Works with tools you already use. A capability stays visible until its first integration is
+        connected — then it unlocks. Keys are encrypted; only the last four characters are shown.
       </p>
       <section className="card featured-card">
         <div>
@@ -121,11 +121,12 @@ export default function IntegrationsPage() {
         {visible.map((c) => {
           const enabled = connectorEnabled(c, caps);
           const on = connectorConnected(c, accounts, creds);
+          const soon = c.id === "warmup";
           return (
             <button
               key={c.id}
               type="button"
-              className={`connector-card ${enabled ? "" : "is-off"} ${connect === c.id ? "is-active" : ""}`}
+              className={`connector-card ${enabled && !soon ? "" : "is-off"} ${connect === c.id ? "is-active" : ""}`}
               onClick={() => open(c.id)}
             >
               <BrandMark connector={c} />
@@ -133,11 +134,15 @@ export default function IntegrationsPage() {
                 <div className="connector-name">{c.name}</div>
                 <p className="muted">{c.blurb}</p>
               </div>
-              <StatusBadge
-                ok={enabled && on}
-                on={c.mode === "file" ? "Ready" : "Connected"}
-                off={enabled ? "Not connected" : "Off"}
-              />
+              {soon ? (
+                <span className="badge">Soon</span>
+              ) : (
+                <StatusBadge
+                  ok={enabled && on}
+                  on={c.mode === "file" ? "Ready" : "Connected"}
+                  off={enabled ? "Not connected" : "Off"}
+                />
+              )}
             </button>
           );
         })}
@@ -285,6 +290,14 @@ function ConnectorSetup({
   onDone: () => void;
 }) {
   const enabled = connectorEnabled(connector, caps);
+  if (connector.id === "warmup") {
+    return (
+      <p className="muted">
+        Inbox warming is listed so the motion is visible. The badge can be stored later — warmup
+        traffic never enters Tick.
+      </p>
+    );
+  }
   if (!enabled) {
     return <p className="muted">This connector is off for this workspace (operator feature flag).</p>;
   }

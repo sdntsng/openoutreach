@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, type CampaignStats } from "../api";
 import { LeadImport } from "../LeadImport";
 import { StatusChip } from "../ui";
+import { GATES, useWorkspace } from "../workspace";
 
 type Tab = "campaign" | "leads";
 
@@ -25,6 +26,7 @@ function downloadCSV(filename: string, csv: string) {
 }
 
 export default function CampaignDetailPage() {
+  const ws = useWorkspace();
   const { id = "" } = useParams();
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("campaign");
@@ -93,7 +95,14 @@ export default function CampaignDetailPage() {
           </p>
         </div>
         <div className="row-actions">
-          {status === "draft" && (
+          {status === "draft" && !ws.hasSender && (
+            <Link to={GATES.sender.to}>
+              <button type="button" className="secondary">
+                Connect a sending account
+              </button>
+            </Link>
+          )}
+          {status === "draft" && ws.hasSender && (
             <button
               type="button"
               disabled={busy}
@@ -111,7 +120,14 @@ export default function CampaignDetailPage() {
               Pause
             </button>
           )}
-          {status === "paused" && (
+          {status === "paused" && !ws.hasSender && (
+            <Link to={GATES.sender.to}>
+              <button type="button" className="secondary">
+                Connect a sending account
+              </button>
+            </Link>
+          )}
+          {status === "paused" && ws.hasSender && (
             <button type="button" disabled={busy} onClick={() => void run(() => api.resumeCampaign(id))}>
               Resume
             </button>

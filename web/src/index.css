@@ -911,3 +911,76 @@ label textarea {
 .sidebar-foot a.active {
   color: var(--accent-hover);
 }
+
+.nav a.is-gated {
+  opacity: 0.55;
+}
+
+.feature-lock {
+  position: relative;
+}
+
+.feature-lock-ask {
+  display: flex;
+  gap: 0.85rem;
+  align-items: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  margin-bottom: 0.85rem;
+  box-shadow: var(--shadow);
+}
+
+.feature-lock-ghost {
+  opacity: 0.38;
+  filter: grayscale(0.35);
+  pointer-events: none;
+  user-select: none;
+}
+
+.motion-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin: 0.25rem 0 1.25rem;
+}
+
+.motion-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.85rem 0.9rem 0.95rem;
+}
+
+.motion-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.55rem 0.15rem;
+  text-decoration: none;
+  color: inherit;
+  border-top: 1px solid var(--border);
+}
+
+.motion-item:first-of-type {
+  border-top: none;
+}
+
+.motion-item:hover {
+  text-decoration: none;
+}
+
+.motion-item .muted {
+  margin: 0.15rem 0 0;
+  font-size: 0.78rem;
+}
+
+.motion-item.is-gated {
+  opacity: 0.55;
+}
+
+a.motion-item.is-gated:hover {
+  opacity: 0.85;
+}

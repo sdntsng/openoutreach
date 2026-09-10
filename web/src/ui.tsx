@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import type { Connector } from "./connectors";
+import { CONNECTORS, type Connector } from "./connectors";
+import { GATES, type GateId } from "./workspace";
 
 export function BrandMark({ connector, size = 36 }: { connector: Connector; size?: number }) {
   return (
@@ -136,6 +137,39 @@ export function PillList({
           ) : null}
         </span>
       ))}
+    </div>
+  );
+}
+
+export function FeatureLock({
+  ready,
+  gate,
+  children,
+}: {
+  ready: boolean;
+  gate: GateId;
+  children: ReactNode;
+}) {
+  if (ready) return <>{children}</>;
+  const spec = GATES[gate];
+  const connector = spec.connectorId ? CONNECTORS.find((c) => c.id === spec.connectorId) : undefined;
+  return (
+    <div className="feature-lock">
+      <div className="feature-lock-ask">
+        {connector ? <BrandMark connector={connector} /> : null}
+        <div>
+          <strong>{spec.title}</strong>
+          <p className="muted" style={{ margin: "0.25rem 0 0.65rem" }}>
+            {spec.ask}
+          </p>
+          <Link to={spec.to}>
+            <button type="button">{spec.title}</button>
+          </Link>
+        </div>
+      </div>
+      <div className="feature-lock-ghost" aria-hidden>
+        {children}
+      </div>
     </div>
   );
 }

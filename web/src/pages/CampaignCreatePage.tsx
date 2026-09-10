@@ -3,11 +3,13 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, asArray, type Account, type WorkspacePlaybook } from "../api";
 import { HOURS, TIMEZONES } from "../connectors";
 import { DEFAULT_SEQUENCE } from "../defaults";
-import { FileDrop, PageIntro } from "../ui";
+import { FeatureLock, FileDrop, PageIntro } from "../ui";
+import { useWorkspace } from "../workspace";
 
 type Mode = "compose" | "import";
 
 export default function CampaignCreatePage() {
+  const ws = useWorkspace();
   const navigate = useNavigate();
   const [mode, setMode] = useState<Mode>("compose");
   const [name, setName] = useState("");
@@ -109,6 +111,7 @@ export default function CampaignCreatePage() {
       {error && <p className="error">{error}</p>}
       {note && <p className="muted">{note}</p>}
 
+      <FeatureLock ready={ws.hasSender} gate="sender">
       <form
         className="card stack"
         onSubmit={(e) => {
@@ -200,6 +203,7 @@ export default function CampaignCreatePage() {
           </div>
         )}
       </form>
+      </FeatureLock>
     </div>
   );
 }

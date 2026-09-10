@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, asArray, type Campaign, type OverviewStats, type Period, type SetupStatus } from "../api";
+import { api, asArray, type Campaign, type OverviewStats, type Period } from "../api";
 import { CampaignTable } from "../CampaignTable";
+import { PageIntro, StatusBadge } from "../ui";
+import { GATES, gateReady, useWorkspace, type GateId } from "../workspace";
 
 const PERIODS: { id: Period; label: string }[] = [
   { id: "today", label: "Today" },
@@ -13,17 +15,15 @@ const PERIODS: { id: Period; label: string }[] = [
 const OPEN_TOOLTIP =
   "Approx. opens are inferred from tracking pixel loads. Image proxies, privacy features, and prefetch can inflate or deflate this number — treat it as directional, not exact.";
 
-const SETUP_STEPS: { action: string; label: string; to: string; done: (s: SetupStatus) => boolean }[] = [
-  { action: "connect_account", label: "Connect a sending account", to: "/integrations?kind=send", done: (s) => s.accounts > 0 },
-  { action: "import_leads", label: "Import leads (CSV or a connector)", to: "/leads", done: (s) => s.leads > 0 },
-  { action: "create_draft", label: "Create a draft campaign", to: "/campaigns/new", done: (s) => s.campaigns > 0 },
-  {
-    action: "preview_and_activate",
-    label: "Preview, then activate with confirm",
-    to: "/campaigns",
-    done: (s) => s.accounts > 0 && s.leads > 0 && s.campaigns > 0,
-  },
-];
+type CapStatus = "ready" | "connect" | "soon";
+
+interface Capability {
+  title: string;
+  blurb: string;
+  to: string;
+  status: CapStatus;
+  gate?: GateId;
+}
 
 function pct(n: number | undefined): string {
   if (n == null || Number.isNaN(n)) return "—";
@@ -32,9 +32,9 @@ function pct(n: number | undefined): string {
 }
 
 export default function OverviewPage() {
+  const ws = useWorkspace();
   const [period, setPeriod] = useState<Period>("7d");
   const [stats, setStats] = useState<OverviewStats | null>(null);
-  const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -43,15 +43,10 @@ export default function OverviewPage() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    Promise.all([
-      api.overview(period),
-      api.setup().catch(() => null),
-      api.listCampaigns().catch(() => ({ campaigns: [] as Campaign[] })),
-    ])
-      .then(([data, s, camps]) => {
+    Promise.all([api.overview(period), api.listCampaigns().catch(() => ({ campaigns: [] as Campaign[] }))])
+      .then(([data, camps]) => {
         if (cancelled) return;
         setStats(data);
-        setSetup(s);
         setCampaigns(asArray(camps, "campaigns"));
       })
       .catch((err: Error) => {
@@ -68,37 +63,145 @@ export default function OverviewPage() {
     };
   }, [period]);
 
-  const showChecklist = setup && (setup.accounts === 0 || setup.campaigns === 0 || setup.leads === 0);
+  const groups: { label: string; items: Capability[] }[] = [
+    {
+      label: "Find",
+      items: [
+        {
+          title: "CSV import",
+          blurb: "Upload or paste. Always on — no vendor key.",
+          to: "/leads",
+          status: "ready",
+        },
+        {
+          title: "Apollo",
+          blurb: "People search. Preview, then import into a draft.",
+          to: gateReady(ws, "apollo") ? "/leads" : GATES.apollo.to,
+          status: gateReady(ws, "apollo") ? "ready" : "connect",
+          gate: "apollo",
+        },
+        {
+          title: "Google Sheets",
+          blurb: "Published sheet or CSV URL into a campaign.",
+          to: gateReady(ws, "sheets") ? "/leads" : GATES.sheets.to,
+          status: gateReady(ws, "sheets") ? "ready" : "connect",
+          gate: "sheets",
+        },
+        {
+          title: "Clay / webhook",
+          blurb: "Signed ingest. Never activates on arrival.",
+          to: gateReady(ws, "clay") ? "/leads" : GATES.clay.to,
+          status: gateReady(ws, "clay") ? "ready" : "connect",
+          gate: "clay",
+        },
+      ],
+    },
+    {
+      label: "Reach",
+      items: [
+        {
+          title: "Sequences",
+          blurb: "Draft YAML, then activate with confirm.",
+          to: gateReady(ws, "sender") ? "/campaigns/new" : GATES.sender.to,
+          status: gateReady(ws, "sender") ? "ready" : "connect",
+          gate: "sender",
+        },
+        {
+          title: "Sending accounts",
+          blurb: "Your Gmail, Microsoft 365, or SMTP — not a rented pool.",
+          to: "/integrations?kind=send",
+          status: gateReady(ws, "sender") ? "ready" : "connect",
+          gate: "sender",
+        },
+        {
+          title: "Inbox warming",
+          blurb: "Badge only. Warmup traffic never enters Tick.",
+          to: "/integrations?connect=warmup",
+          status: "soon",
+        },
+      ],
+    },
+    {
+      label: "Reply",
+      items: [
+        {
+          title: "Unified inbox",
+          blurb: "Needs reply, got reply, sent — same Gmail thread.",
+          to: gateReady(ws, "sender") ? "/inbox" : GATES.sender.to,
+          status: gateReady(ws, "sender") ? "ready" : "connect",
+          gate: "sender",
+        },
+        {
+          title: "Suggested replies",
+          blurb: "Uses project facts. You still send.",
+          to: gateReady(ws, "sender") ? "/inbox" : GATES.sender.to,
+          status: gateReady(ws, "sender") ? "ready" : "connect",
+          gate: "sender",
+        },
+      ],
+    },
+    {
+      label: "Route",
+      items: [
+        {
+          title: "Outbound webhook",
+          blurb: "POST sent / reply / bounce. Failures never block send.",
+          to: GATES.outbound.to,
+          status: gateReady(ws, "outbound") ? "ready" : "connect",
+          gate: "outbound",
+        },
+        {
+          title: "MCP / agents",
+          blurb: "Same engine as the dashboard. Create ≠ send.",
+          to: gateReady(ws, "mcp") ? "/settings" : GATES.mcp.to,
+          status: gateReady(ws, "mcp") ? "ready" : "connect",
+          gate: "mcp",
+        },
+        {
+          title: "LinkedIn steps",
+          blurb: "Webhook ingest only. We do not scrape Sales Nav.",
+          to: "/integrations",
+          status: "soon",
+        },
+      ],
+    },
+  ];
 
   return (
     <div>
-      <h1>Overview</h1>
-      {showChecklist && setup && (
-        <div className="panel" style={{ marginBottom: "1.25rem" }}>
-          <h2 style={{ marginTop: 0 }}>Get started</h2>
-          <p className="muted">Connect a mailbox, import leads, then create a draft. Activate is a separate confirm.</p>
-          <ol style={{ margin: "0.75rem 0 0", paddingLeft: "1.2rem" }}>
-            {SETUP_STEPS.map((step) => {
-              const done = step.done(setup);
-              return (
-                <li key={step.action} style={{ marginBottom: "0.4rem" }}>
-                  {done ? (
-                    <span className="muted">{step.label} — done</span>
-                  ) : (
-                    <Link to={step.to}>{step.label}</Link>
-                  )}
-                </li>
-              );
-            })}
-          </ol>
-          {!setup.encryption_ready && (
-            <p className="muted" style={{ marginTop: "0.75rem" }}>
-              Vault is not ready. Set <code>CREDENTIAL_ENCRYPTION_KEY</code> once on the server — no extra provider flags.
-            </p>
-          )}
-        </div>
-      )}
-      <div className="filters">
+      <PageIntro title="Command center">
+        One motion: find leads, reach from your mailbox, reply in-thread, route the hot ones. A
+        capability stays visible when the first integration is missing — connect that, then use it.
+      </PageIntro>
+
+      <div className="motion-grid">
+        {groups.map((g) => (
+          <section key={g.label} className="card motion-col">
+            <div className="nav-label">{g.label}</div>
+            {g.items.map((item) => (
+              <Link
+                key={item.title}
+                to={item.to}
+                className={`motion-item ${item.status === "ready" ? "" : "is-gated"}`}
+              >
+                <div>
+                  <div className="connector-name">{item.title}</div>
+                  <p className="muted">{item.blurb}</p>
+                </div>
+                {item.status === "ready" ? (
+                  <StatusBadge ok on="Ready" />
+                ) : item.status === "soon" ? (
+                  <span className="badge">Soon</span>
+                ) : (
+                  <span className="badge badge-warn">Connect</span>
+                )}
+              </Link>
+            ))}
+          </section>
+        ))}
+      </div>
+
+      <div className="filters" style={{ marginTop: "1.5rem" }}>
         {PERIODS.map((p) => (
           <button
             key={p.id}

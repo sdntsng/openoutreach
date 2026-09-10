@@ -1,8 +1,8 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { api, asArray, type Campaign, type IntegrationCredential } from "./api";
-import { CONNECTORS, connectorConnected, connectorEnabled } from "./connectors";
-import { BrandMark, FileDrop, StatusBadge } from "./ui";
+import { api, type Campaign } from "./api";
+import { FeatureLock, FileDrop, StatusBadge } from "./ui";
+import { useWorkspace } from "./workspace";
 
 type Source = "csv" | "apollo" | "sheets" | "clay";
 
@@ -23,35 +23,13 @@ export function LeadImport({
   const [apolloTitles, setApolloTitles] = useState("");
   const [apolloRows, setApolloRows] = useState<Record<string, string>[]>([]);
   const [sheetURL, setSheetURL] = useState("");
-  const [creds, setCreds] = useState<IntegrationCredential[]>([]);
-  const [caps, setCaps] = useState<Awaited<ReturnType<typeof api.capabilities>> | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const ws = useWorkspace();
 
   const list = campaigns || [];
   const cid = campaignId ?? (target ? Number(target) || target : "");
-
-  useEffect(() => {
-    Promise.all([api.listIntegrations().catch(() => ({ integrations: [] })), api.capabilities().catch(() => null)])
-      .then(([ints, c]) => {
-        setCreds(asArray(ints, "integrations"));
-        setCaps(c);
-      })
-      .catch(() => undefined);
-  }, []);
-
-  function connectorOf(id: string) {
-    return CONNECTORS.find((c) => c.id === id);
-  }
-
-  function ready(id: string): boolean {
-    const c = connectorOf(id);
-    if (!c) return false;
-    if (!connectorEnabled(c, caps)) return false;
-    if (c.mode === "file") return true;
-    return connectorConnected(c, [], creds);
-  }
 
   async function importCSV(text: string) {
     if (cid === "" || cid == null) throw new Error("Pick a campaign to import into");
@@ -138,8 +116,8 @@ export function LeadImport({
       )}
 
       {source === "apollo" && (
+        <FeatureLock ready={ws.hasApollo} gate="apollo">
         <ApolloImport
-          ready={ready("apollo")}
           busy={busy}
           setBusy={setBusy}
           setError={setError}
@@ -165,69 +143,54 @@ export function LeadImport({
             setBusy(true);
             importCSV(text)
               .catch((err: Error) => setError(err.message))
-              .finally(() => setBusy(false));
+              .finally(() =>             setBusy(false));
           }}
         />
+        </FeatureLock>
       )}
 
       {source === "sheets" && (
+        <FeatureLock ready={ws.hasSheets} gate="sheets">
         <div className="stack">
-          {!ready("sheets") ? (
-            <NeedConnector id="sheets" />
-          ) : (
-            <>
-              <label>
-                Sheet or CSV URL
-                <input
-                  value={sheetURL}
-                  onChange={(e) => setSheetURL(e.target.value)}
-                  placeholder="https://docs.google.com/spreadsheets/d/…"
-                />
-              </label>
-              <button
-                type="button"
-                disabled={busy || !sheetURL.trim() || cid === ""}
-                onClick={() => {
-                  if (cid === "" || cid == null) {
-                    setError("Pick a campaign to import into");
-                    return;
-                  }
-                  setBusy(true);
-                  setError(null);
-                  api
-                    .sheetsImport({ url: sheetURL.trim(), campaign_id: Number(cid) })
-                    .then(() => {
-                      setNote("Sheet import finished.");
-                      onImported?.();
-                    })
-                    .catch((err: Error) => setError(err.message))
-                    .finally(() => setBusy(false));
-                }}
-              >
-                Import from Sheet
-              </button>
-            </>
-          )}
+          <label>
+            Sheet or CSV URL
+            <input
+              value={sheetURL}
+              onChange={(e) => setSheetURL(e.target.value)}
+              placeholder="https://docs.google.com/spreadsheets/d/…"
+            />
+          </label>
+          <button
+            type="button"
+            disabled={busy || !sheetURL.trim() || cid === ""}
+            onClick={() => {
+              if (cid === "" || cid == null) {
+                setError("Pick a campaign to import into");
+                return;
+              }
+              setBusy(true);
+              setError(null);
+              api
+                .sheetsImport({ url: sheetURL.trim(), campaign_id: Number(cid) })
+                .then(() => {
+                  setNote("Sheet import finished.");
+                  onImported?.();
+                })
+                .catch((err: Error) => setError(err.message))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Import from Sheet
+          </button>
         </div>
+        </FeatureLock>
       )}
 
-      {source === "clay" && <ClayHint />}
-    </div>
-  );
-}
-
-function NeedConnector({ id }: { id: string }) {
-  const c = CONNECTORS.find((x) => x.id === id);
-  if (!c) return null;
-  return (
-    <div className="panel row-actions">
-      <BrandMark connector={c} />
-      <div>
-        <strong>{c.name}</strong> is not connected.
-        <div>
-          <Link to={`/integrations?connect=${id}`}>Add the API key on Integrations</Link>
-        </div>
-      </div>
+      {source === "clay" && (
+        <FeatureLock ready={ws.hasClay} gate="clay">
+          <ClayHint />
+        </FeatureLock>
+      )}
     </div>
   );
 }
@@ -247,7 +210,6 @@ function ClayHint() {
 }
 
 function ApolloImport({
-  ready,
   busy,
   setBusy,
   setError,
@@ -259,7 +221,6 @@ function ApolloImport({
   setRows,
   onImport,
 }: {
-  ready: boolean;
   busy: boolean;
   setBusy: (v: boolean) => void;
   setError: (v: string | null) => void;
@@ -271,7 +232,6 @@ function ApolloImport({
   setRows: (v: Record<string, string>[]) => void;
   onImport: () => void;
 }) {
-  if (!ready) return <NeedConnector id="apollo" />;
   return (
     <div className="stack">
       <label>
