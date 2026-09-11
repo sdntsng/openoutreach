@@ -248,7 +248,12 @@ func convertValue(v any) driver.Value {
 	switch t := v.(type) {
 	case nil:
 		return nil
-	case bool, string, []byte:
+	case bool, []byte:
+		return t
+	case string:
+		if ts, ok := parseD1Time(t); ok {
+			return ts
+		}
 		return t
 	case float64:
 		if t == float64(int64(t)) {
@@ -258,6 +263,36 @@ func convertValue(v any) driver.Value {
 	default:
 		return fmt.Sprint(t)
 	}
+}
+
+// D1 JSON-encodes DATETIME as text. database/sql cannot scan a string into *time.Time.
+func parseD1Time(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 10 || s[4] != '-' || s[7] != '-' {
+		return time.Time{}, false
+	}
+	for _, i := range []int{0, 1, 2, 3, 5, 6, 8, 9} {
+		if s[i] < '0' || s[i] > '9' {
+			return time.Time{}, false
+		}
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if ts, err := time.ParseInLocation(layout, s, time.UTC); err == nil {
+			return ts.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }
 
 func namedToParams(args []driver.NamedValue) []any {

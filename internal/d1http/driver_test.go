@@ -10,6 +10,60 @@ import (
 	"time"
 )
 
+func TestDriverScansD1DatetimeIntoTime(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"columns": []string{"id", "created_at", "updated_at", "name"},
+			"rows": [][]any{{
+				float64(1),
+				"2026-09-11 02:59:00",
+				"2026-09-11T03:01:02Z",
+				"default",
+			}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	db, err := sql.Open("d1http", FormatDSN(srv.URL, "tok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	var (
+		id      int64
+		created time.Time
+		updated sql.NullTime
+		name    string
+	)
+	if err := db.QueryRow("SELECT id, created_at, updated_at, name FROM integration_credentials").Scan(
+		&id, &created, &updated, &name,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if id != 1 || name != "default" {
+		t.Fatalf("got id=%d name=%s", id, name)
+	}
+	if created.UTC().Format("2006-01-02 15:04:05") != "2026-09-11 02:59:00" {
+		t.Fatalf("created_at %s", created)
+	}
+	if !updated.Valid || updated.Time.UTC().Format(time.RFC3339) != "2026-09-11T03:01:02Z" {
+		t.Fatalf("updated_at %+v", updated)
+	}
+}
+
+func TestDriverLeavesNonTimeStringsAlone(t *testing.T) {
+	if _, ok := parseD1Time("vinci@furnly.in"); ok {
+		t.Fatal("email must not parse as time")
+	}
+	if _, ok := parseD1Time("https://hooks.slack.com/services/x"); ok {
+		t.Fatal("url must not parse as time")
+	}
+	if _, ok := parseD1Time("active"); ok {
+		t.Fatal("status must not parse as time")
+	}
+}
+
 func TestDriverQueryAndExec(t *testing.T) {
 	var lastMode string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
