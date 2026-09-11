@@ -59,7 +59,7 @@
   "vars": {
     "OPENOUTREACH_WORKSPACE_ID": "default",
     "PUBLIC_BASE_URL": "https://openoutreach.siddhant.site",
-    "AUTH_MODE": "cloudflare_access",
+    "AUTH_MODE": "hosted",
     "AUTH_ALLOWED_EMAILS": "sid.tauras1@gmail.com"
   }
 }

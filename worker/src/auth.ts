@@ -1,5 +1,6 @@
 import { APIError } from "better-auth/api";
 import { betterAuth } from "better-auth";
+import { acceptInvite, emailMayJoin } from "./team";
 
 export type AuthEnv = {
   DB?: D1Database;
@@ -12,19 +13,11 @@ export type AuthEnv = {
   AUTH_MODE?: string;
   CF_ACCESS_AUD?: string;
   POLICY_AUD?: string;
+  OPENOUTREACH_WORKSPACE_ID?: string;
 };
 
-function allowedEmails(env: AuthEnv): string[] {
-  return (env.AUTH_ALLOWED_EMAILS || "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-function isAllowedEmail(env: AuthEnv, email: string): boolean {
-  const allow = allowedEmails(env);
-  if (allow.length === 0) return true;
-  return allow.includes(email.trim().toLowerCase());
+export function googleAuthConfigured(env: AuthEnv): boolean {
+  return Boolean(env.GOOGLE_CLIENT_ID?.trim() && env.GOOGLE_CLIENT_SECRET?.trim());
 }
 
 export function createAuth(env: AuthEnv, request: Request) {
@@ -32,8 +25,7 @@ export function createAuth(env: AuthEnv, request: Request) {
   if (!env.DB || secret.length < 32) return null;
 
   const baseURL = (env.PUBLIC_BASE_URL || new URL(request.url).origin).replace(/\/$/, "");
-  const googleId = env.GOOGLE_CLIENT_ID?.trim();
-  const googleSecret = env.GOOGLE_CLIENT_SECRET?.trim();
+  const googleOn = googleAuthConfigured(env);
 
   return betterAuth({
     baseURL,
@@ -48,29 +40,32 @@ export function createAuth(env: AuthEnv, request: Request) {
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,
+      minPasswordLength: 8,
     },
-    socialProviders:
-      googleId && googleSecret
-        ? {
-            google: {
-              clientId: googleId,
-              clientSecret: googleSecret,
-              mapProfileToUser: (profile: { name?: string; email?: string }) => ({
-                name: profile.name || profile.email || "User",
-              }),
-            },
-          }
-        : undefined,
+    socialProviders: googleOn
+      ? {
+          google: {
+            clientId: env.GOOGLE_CLIENT_ID!.trim(),
+            clientSecret: env.GOOGLE_CLIENT_SECRET!.trim(),
+            mapProfileToUser: (profile: { name?: string; email?: string }) => ({
+              name: profile.name || profile.email || "User",
+            }),
+          },
+        }
+      : undefined,
     databaseHooks: {
       user: {
         create: {
           before: async (user) => {
-            if (!isAllowedEmail(env, user.email)) {
+            if (!(await emailMayJoin(env, user.email))) {
               throw new APIError("FORBIDDEN", {
-                message: "This OpenOutreach instance is invite-only.",
+                message: "This project is invite-only. Ask an owner for a link.",
               });
             }
             return { data: user };
+          },
+          after: async (user) => {
+            await acceptInvite(env, user.email);
           },
         },
       },
@@ -90,4 +85,3 @@ export function accessEmail(request: Request): string | null {
     request.headers.get("cf-access-authenticated-user-email")
   );
 }
-

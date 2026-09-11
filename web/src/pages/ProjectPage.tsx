@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { api, type WorkspacePlaybook } from "../api";
 import { PageIntro, PillList } from "../ui";
 
@@ -32,7 +33,7 @@ export default function ProjectPage() {
     <div>
       <PageIntro title="Project">
         Everything the agent and templates can use: company profile, offer, and competitors. Saved to this
-        workspace — never sends mail.
+        workspace — never sends mail. Invite teammates from <Link to="/settings#team">Settings → People</Link>.
       </PageIntro>
       {error && <div className="error">{error}</div>}
       <form className="card stack" onSubmit={(e) => void save(e)}>

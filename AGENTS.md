@@ -53,7 +53,7 @@ Settled cold-cli decisions (scheduler, templates as `ReplaceAll`, daily limits f
 - **OAuth scopes:** `openid` `email` `gmail.send` `gmail.readonly`
 - **Mock:** `OPENOUTREACH_MOCK_GMAIL=1`
 - **Worker cron:** `*/2 * * * *` UTC — cron ≠ send permission
-- **Public paths:** `/t/o/*`, `/t/c/*`, Gmail OAuth callback. Auth: `AUTH_MODE=cloudflare_access` (default), `hosted` (Better Auth `/sign-in` + `/api/auth/*`), or `local_noauth`. MCP bearer still works.
+- **Public paths:** `/t/o/*`, `/t/c/*`, Gmail OAuth callback. Auth: `AUTH_MODE=hosted` (Better Auth `/sign-in` email/password + optional Google; project invites on Settings), `cloudflare_access` (Zero Trust OTP/IdP), or `local_noauth`. MCP bearer still works.
 
 ## Dashboard UI direction
 

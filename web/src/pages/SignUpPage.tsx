@@ -1,13 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { authClient, safeRedirect } from "../auth-client";
-import { AuthCard, AuthMethodChooser } from "./SignInPage";
+import { api } from "../api";
+import { authClient, safeRedirect, useAuth } from "../auth-client";
+import { AuthCard } from "./SignInPage";
 
 export default function SignUpPage() {
+  const auth = useAuth();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const redirectTo = safeRedirect(params.get("redirect"));
-  const [showEmail, setShowEmail] = useState(false);
+  const inviteToken = (params.get("invite") || "").trim();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -15,6 +17,19 @@ export default function SignUpPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
+  const [inviteLocked, setInviteLocked] = useState(false);
+  const googleOn = Boolean(auth.methods?.google) && !inviteToken;
+
+  useEffect(() => {
+    if (!inviteToken) return;
+    api
+      .lookupInvite(inviteToken)
+      .then((d) => {
+        setEmail(d.email);
+        setInviteLocked(true);
+      })
+      .catch(() => setError("This invite is invalid or already used."));
+  }, [inviteToken]);
 
   async function handleGoogle() {
     setError(null);
@@ -67,73 +82,59 @@ export default function SignUpPage() {
 
   return (
     <AuthCard
-      title="Create account"
-      footer={
-        showEmail ? (
-          <div className="auth-footer-row">
-            <button type="button" className="linkish" onClick={() => setShowEmail(false)}>
-              Back
-            </button>
-            <Link to={`/sign-in?redirect=${encodeURIComponent(redirectTo)}`}>Sign in</Link>
-          </div>
-        ) : (
-          <Link to={`/sign-in?redirect=${encodeURIComponent(redirectTo)}`}>Sign in</Link>
-        )
-      }
+      title={inviteLocked ? "Join this project" : "Create account"}
+      footer={<Link to={`/sign-in?redirect=${encodeURIComponent(redirectTo)}`}>Sign in</Link>}
     >
-      {!showEmail ? (
-        <>
-          <AuthMethodChooser
-            googleLabel="Continue with Google"
-            emailLabel="Continue with email"
-            isBusy={googleBusy}
-            onGoogle={() => void handleGoogle()}
-            onEmail={() => {
-              setShowEmail(true);
-              setError(null);
-            }}
-          />
-          {error ? <p className="auth-error">{error}</p> : null}
-        </>
-      ) : (
-        <form className="auth-form" onSubmit={(e) => void handleEmail(e)}>
-          <input
-            type="text"
-            placeholder="Name..."
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            autoComplete="name"
-          />
-          <input
-            type="email"
-            placeholder="Email address..."
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="email"
-            required
-          />
-          <input
-            type="password"
-            placeholder="Password..."
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="new-password"
-            required
-          />
-          <input
-            type="password"
-            placeholder="Confirm password..."
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            autoComplete="new-password"
-            required
-          />
-          {error ? <p className="auth-error">{error}</p> : null}
-          <button type="submit" disabled={busy}>
-            {busy ? "Creating account..." : "Create account"}
+      <p className="muted" style={{ marginTop: 0 }}>
+        {inviteLocked
+          ? "Set a password for this email. You will share this workspace — campaigns, mailbox, and leads."
+          : "Sign up with email and password. This instance may be invite-only."}
+      </p>
+      {googleOn ? (
+        <div className="auth-methods">
+          <button type="button" className="auth-google" onClick={() => void handleGoogle()} disabled={googleBusy}>
+            {googleBusy ? "Opening Google..." : "Continue with Google"}
           </button>
-        </form>
-      )}
+        </div>
+      ) : null}
+      <form className="auth-form" onSubmit={(e) => void handleEmail(e)}>
+        <input
+          type="text"
+          placeholder="Name..."
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          autoComplete="name"
+        />
+        <input
+          type="email"
+          placeholder="Email address..."
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          autoComplete="email"
+          required
+          readOnly={inviteLocked}
+        />
+        <input
+          type="password"
+          placeholder="Password..."
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          autoComplete="new-password"
+          required
+        />
+        <input
+          type="password"
+          placeholder="Confirm password..."
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+          autoComplete="new-password"
+          required
+        />
+        {error ? <p className="auth-error">{error}</p> : null}
+        <button type="submit" disabled={busy}>
+          {busy ? "Creating account..." : inviteLocked ? "Join project" : "Create account"}
+        </button>
+      </form>
     </AuthCard>
   );
 }

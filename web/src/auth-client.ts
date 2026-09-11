@@ -9,6 +9,7 @@ export type WhoAmI = {
   mode: AuthMode;
   user: AuthUser | null;
   accessConfigured?: boolean;
+  methods?: { password?: boolean; google?: boolean; otp?: boolean };
 };
 
 export const authClient = createAuthClient({

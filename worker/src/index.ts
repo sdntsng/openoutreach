@@ -1,11 +1,19 @@
 import { Container, getContainer } from "@cloudflare/containers";
 import { DurableObject } from "cloudflare:workers";
-import { accessEmail, createAuth, getSession } from "./auth";
+import { accessEmail, createAuth, getSession, googleAuthConfigured } from "./auth";
 import { accessAudience, getAuthMode, type AuthMode } from "./auth-mode";
 import { containerEnv } from "./container-env";
 import { resolveContainerEnv } from "./container-env-resolve";
 import { handleD1 } from "./d1";
 import { handleMcp } from "./mcp";
+import {
+  createInvite,
+  emailMayJoin,
+  listMembers,
+  lookupInvite,
+  revokeMember,
+  seedCaller,
+} from "./team";
 
 /** Transparent 1x1 GIF */
 const PIXEL_GIF_B64 =
@@ -172,6 +180,7 @@ function isPublicPath(pathname: string, mode: AuthMode): boolean {
   if (pathname.match(/^\/api\/v1\/integrations\/[^/]+\/ingest$/)) return true;
   if (pathname.startsWith("/api/v1/integrations/resend/events")) return true;
   if (pathname === "/api/auth/whoami") return true;
+  if (pathname === "/api/v1/team/invite") return true;
   if (mode === "hosted") {
     return pathname.startsWith("/api/auth") || pathname === "/sign-in" || pathname === "/sign-up";
   }
@@ -249,6 +258,7 @@ async function handleWhoAmI(request: Request, env: Env, mode: AuthMode): Promise
       mode,
       accessConfigured: Boolean(aud),
       user: email ? { email, name: email } : null,
+      methods: { password: false, google: false, otp: true },
     });
   }
   const session = await getSession(env, request);
@@ -256,6 +266,7 @@ async function handleWhoAmI(request: Request, env: Env, mode: AuthMode): Promise
   return json({
     mode,
     user: user?.email ? { email: user.email, name: user.name || user.email } : null,
+    methods: { password: true, google: googleAuthConfigured(env) },
   });
 }
 
@@ -346,6 +357,61 @@ async function recordClick(
   }
 }
 
+function envelope(data: unknown, status = 200, error?: { code: string; message: string }) {
+  return json({ data: error ? null : data, error: error || null, warnings: [] }, status);
+}
+
+async function handleTeam(request: Request, env: Env, mode: AuthMode): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.pathname === "/api/v1/team/invite" && request.method === "GET") {
+    const token = (url.searchParams.get("token") || "").trim();
+    const invite = await lookupInvite(env, token);
+    if (!invite) {
+      return envelope(null, 404, { code: "not_found", message: "Invite is invalid or already used" });
+    }
+    return envelope({ email: invite.email, role: invite.role });
+  }
+
+  if (mode !== "hosted") {
+    return envelope(null, 400, {
+      code: "auth_mode",
+      message: "Invites and password login need AUTH_MODE=hosted (Better Auth). Cloudflare Access only offers OTP/IdP.",
+    });
+  }
+
+  const session = await getSession(env, request);
+  const actor = session?.user?.email;
+  if (!actor) {
+    return envelope(null, 401, { code: "unauthorized", message: "Sign in required" });
+  }
+
+  if (url.pathname === "/api/v1/team/members" && request.method === "GET") {
+    await seedCaller(env, actor);
+    const members = await listMembers(env);
+    return envelope({ members, workspace_id: env.OPENOUTREACH_WORKSPACE_ID || "default" });
+  }
+
+  if (url.pathname === "/api/v1/team/members" && request.method === "POST") {
+    const body = (await request.json().catch(() => ({}))) as { email?: string };
+    const result = await createInvite(env, request, actor, body.email || "");
+    if (result.error) {
+      return envelope(null, result.status || 400, { code: "invite_failed", message: result.error });
+    }
+    return envelope(result.member);
+  }
+
+  if (url.pathname === "/api/v1/team/members" && request.method === "DELETE") {
+    const body = (await request.json().catch(() => ({}))) as { email?: string };
+    const result = await revokeMember(env, actor, body.email || "");
+    if (result.error) {
+      return envelope(null, result.status || 400, { code: "revoke_failed", message: result.error });
+    }
+    return envelope({ deleted: true, email: (body.email || "").trim().toLowerCase() });
+  }
+
+  return envelope(null, 405, { code: "method_not_allowed", message: "Unsupported team route" });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -425,8 +491,18 @@ export default {
               302,
             );
           }
+          if (session.user?.email && !(await emailMayJoin(env, session.user.email))) {
+            if (pathname.startsWith("/api/")) {
+              return json({ error: { code: "forbidden", message: "You are not a member of this project" } }, 403);
+            }
+            return Response.redirect(new URL("/sign-in", url.origin).href, 302);
+          }
         }
       }
+    }
+
+    if (pathname === "/api/v1/team/invite" || pathname === "/api/v1/team/members") {
+      return handleTeam(request, env, mode);
     }
 
     if (

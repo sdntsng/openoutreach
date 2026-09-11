@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { authClient, safeRedirect } from "../auth-client";
+import { authClient, safeRedirect, useAuth } from "../auth-client";
 
 function GoogleLogo() {
   return (
@@ -54,42 +54,17 @@ export function AuthCard({
   );
 }
 
-export function AuthMethodChooser({
-  googleLabel,
-  emailLabel,
-  isBusy,
-  onGoogle,
-  onEmail,
-}: {
-  googleLabel: string;
-  emailLabel: string;
-  isBusy?: boolean;
-  onGoogle: () => void;
-  onEmail: () => void;
-}) {
-  return (
-    <div className="auth-methods">
-      <button type="button" className="auth-google" onClick={onGoogle} disabled={isBusy}>
-        <GoogleLogo />
-        {isBusy ? "Opening Google..." : googleLabel}
-      </button>
-      <button type="button" className="secondary auth-email-btn" onClick={onEmail} disabled={isBusy}>
-        {emailLabel}
-      </button>
-    </div>
-  );
-}
-
 export default function SignInPage() {
+  const auth = useAuth();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const redirectTo = safeRedirect(params.get("redirect"));
-  const [showEmail, setShowEmail] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
+  const googleOn = Boolean(auth.methods?.google);
 
   async function handleGoogle() {
     setError(null);
@@ -134,57 +109,42 @@ export default function SignInPage() {
   return (
     <AuthCard
       title="Sign in"
-      footer={
-        showEmail ? (
-          <div className="auth-footer-row">
-            <button type="button" className="linkish" onClick={() => setShowEmail(false)}>
-              Back
-            </button>
-            <Link to={`/sign-up?redirect=${encodeURIComponent(redirectTo)}`}>Create account</Link>
-          </div>
-        ) : (
-          <Link to={`/sign-up?redirect=${encodeURIComponent(redirectTo)}`}>Create account</Link>
-        )
-      }
+      footer={<Link to={`/sign-up?redirect=${encodeURIComponent(redirectTo)}`}>Create account</Link>}
     >
-      {!showEmail ? (
-        <>
-          <AuthMethodChooser
-            googleLabel="Continue with Google"
-            emailLabel="Continue with email"
-            isBusy={googleBusy}
-            onGoogle={() => void handleGoogle()}
-            onEmail={() => {
-              setShowEmail(true);
-              setError(null);
-            }}
-          />
-          {error ? <p className="auth-error">{error}</p> : null}
-        </>
-      ) : (
-        <form className="auth-form" onSubmit={(e) => void handleEmail(e)}>
-          <input
-            type="email"
-            placeholder="Email address..."
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="email"
-            required
-          />
-          <input
-            type="password"
-            placeholder="Password..."
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-            required
-          />
-          {error ? <p className="auth-error">{error}</p> : null}
-          <button type="submit" disabled={busy}>
-            {busy ? "Signing in..." : "Sign in"}
+      <p className="muted" style={{ marginTop: 0 }}>
+        Email and password. Google is optional when OAuth is configured. Cloudflare Access OTP is
+        not used in this mode.
+      </p>
+      {googleOn ? (
+        <div className="auth-methods">
+          <button type="button" className="auth-google" onClick={() => void handleGoogle()} disabled={googleBusy}>
+            <GoogleLogo />
+            {googleBusy ? "Opening Google..." : "Continue with Google"}
           </button>
-        </form>
-      )}
+        </div>
+      ) : null}
+      <form className="auth-form" onSubmit={(e) => void handleEmail(e)}>
+        <input
+          type="email"
+          placeholder="Email address..."
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          autoComplete="email"
+          required
+        />
+        <input
+          type="password"
+          placeholder="Password..."
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          autoComplete="current-password"
+          required
+        />
+        {error ? <p className="auth-error">{error}</p> : null}
+        <button type="submit" disabled={busy}>
+          {busy ? "Signing in..." : "Sign in"}
+        </button>
+      </form>
     </AuthCard>
   );
 }

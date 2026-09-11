@@ -5,7 +5,7 @@ Browser / MCP client
         │
         ▼
 Cloudflare Worker  ── public /t/o /t/c, Gmail OAuth callback
-        │              AUTH_MODE=cloudflare_access (default) or hosted Better Auth
+        │              AUTH_MODE=hosted (Better Auth password/Google) or cloudflare_access
         │ scheduled */2
         ▼
 Cloudflare Container (outreachd :8080)

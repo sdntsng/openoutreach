@@ -408,6 +408,20 @@ export const api = {
   workspace: () =>
     request<{ workspace_id: string }>("/workspace"),
 
+  listTeam: () => request<{ members: TeamMember[]; workspace_id?: string }>("/team/members"),
+
+  inviteTeam: (email: string) =>
+    request<TeamMember>("/team/members", { method: "POST", body: JSON.stringify({ email }) }),
+
+  revokeTeam: (email: string) =>
+    request<{ deleted: boolean; email: string }>("/team/members", {
+      method: "DELETE",
+      body: JSON.stringify({ email }),
+    }),
+
+  lookupInvite: (token: string) =>
+    request<{ email: string; role?: string }>(`/team/invite?token=${encodeURIComponent(token)}`),
+
   capabilities: () => request<Capabilities>("/settings/capabilities"),
 
   listIntegrations: () =>
@@ -491,6 +505,16 @@ export const api = {
       body: JSON.stringify(body),
     }),
 };
+
+export interface TeamMember {
+  email: string;
+  role: "owner" | "member";
+  status: "invited" | "active" | "revoked";
+  invited_by?: string;
+  created_at?: string;
+  accepted_at?: string;
+  invite_url?: string;
+}
 
 export interface Capabilities {
   workspace_id?: string;

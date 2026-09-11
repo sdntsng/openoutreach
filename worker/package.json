@@ -52,7 +52,7 @@
         "description": "Workspace scope. Default: `default`."
       },
       "AUTH_MODE": {
-        "description": "Dashboard auth: `cloudflare_access` (default), `hosted` (Better Auth Google/email), or `local_noauth`."
+        "description": "Dashboard auth: `hosted` (Better Auth email/password + optional Google, project invites), `cloudflare_access` (Access OTP/IdP), or `local_noauth`."
       },
       "CF_ACCESS_AUD": {
         "description": "Cloudflare Access application AUD tag. Required when AUTH_MODE=cloudflare_access."

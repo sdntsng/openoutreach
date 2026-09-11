@@ -140,7 +140,7 @@ Cron: `*/2 * * * *` (UTC). Cron does not imply a send — spacing comes from `sc
 | `GOOGLE_CLIENT_ID` | For Gmail | Google Cloud Console |
 | `GOOGLE_CLIENT_SECRET` | For Gmail | Google Cloud Console |
 | `OPENOUTREACH_WORKSPACE_ID` | No | Default `default` (wrangler var) |
-| `AUTH_MODE` | No | `cloudflare_access` (default), `hosted`, or `local_noauth` |
+| `AUTH_MODE` | No | `hosted` (Better Auth email/password + optional Google), `cloudflare_access` (Access OTP/IdP), or `local_noauth` |
 | `CF_ACCESS_AUD` | Access mode | Access application AUD tag (`POLICY_AUD` alias) |
 | `BETTER_AUTH_SECRET` | Hosted mode | `openssl rand -hex 32` — dashboard sessions |
 | `AUTH_ALLOWED_EMAILS` | No | Comma-separated allowlist (Access policy + Better Auth signup) |
@@ -171,7 +171,7 @@ SMTP alternative (still no IMAP): `smtp.mx.cloudflare.net:465`, username `api_to
    `{PUBLIC_BASE_URL}/api/v1/accounts/google/oauth/callback`
    If `AUTH_MODE=hosted`, also add `{PUBLIC_BASE_URL}/api/auth/callback/google`.
    See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md).
-3. **Auth (default: Cloudflare Access).** Run `./scripts/setup-cf-access.sh` (needs `CLOUDFLARE_API_TOKEN` with **Access: Apps and Policies Write** — `wrangler login` OAuth cannot create Access apps). Or create apps in Zero Trust dashboard: allow `AUTH_ALLOWED_EMAILS`, set `CF_ACCESS_AUD`, bypass `/t/*`, `/internal/*`, and the Gmail OAuth callback. Or set `AUTH_MODE=hosted` for in-app Google/email sign-in.
+3. **Auth (production on this Worker: hosted).** Set `AUTH_MODE=hosted` (wrangler vars; `--keep-vars` will not overwrite an existing Access value until you change it in the dashboard). Turn **off** or Bypass the Cloudflare Access application for this hostname, or you will still see email OTP in front of `/sign-in`. First account: sign up with an `AUTH_ALLOWED_EMAILS` address and a password. Invite teammates from **Settings → People** (copy link; we do not send mail). Optional Google: `{PUBLIC_BASE_URL}/api/auth/callback/google` on the OAuth client.
 4. Dashboard → **Settings → Sending Accounts → Connect Google**. Cloudflare Email: see [Cloudflare Email Sending](#cf-email) (`FEATURE_CF_EMAIL=1`).
 
 ## Verify
@@ -188,12 +188,12 @@ Create a draft campaign (does not send), preview, then activate with `confirm: t
 
 ## Dashboard auth
 
-Same three modes as OpenSEO self-host / hosted. Set `AUTH_MODE` on the Worker (default **`cloudflare_access`**).
+Same three modes as OpenSEO self-host / hosted. Set `AUTH_MODE` on the Worker (this repo’s wrangler default is **`hosted`**).
 
 | Mode | Who it's for | What happens |
 |------|----------------|--------------|
-| `cloudflare_access` | Default. Single-tenant CF deploy | Cloudflare Access login (Google/email via Zero Trust). Set `CF_ACCESS_AUD`. |
-| `hosted` | In-app accounts | Better Auth: `/sign-in` with Google + email/password. Needs `BETTER_AUTH_SECRET` + D1 auth tables. |
+| `hosted` | In-app accounts (password + optional Google) | Better Auth on D1. `/sign-in`, `/sign-up`, `/api/auth/*`. Invite people from Settings. Cloudflare Access has **no password store** — OTP is an IdP, not an account database. |
+| `cloudflare_access` | Single-tenant Zero Trust | Email one-time PIN and/or Google/GitHub/SAML IdPs. No app-level password. Add people in the Access policy. |
 | `local_noauth` | Docker / private network | No dashboard login. Do not expose to the internet. |
 
 ### Cloudflare Access (default)
@@ -223,8 +223,13 @@ When `CF_ACCESS_AUD` is set, the Worker also rejects requests that lack `Cf-Acce
 
 - `/sign-in`, `/sign-up`, `/api/auth/*` are public
 - Dashboard and `/api/v1/*` require a session cookie
-- Optional `AUTH_ALLOWED_EMAILS` makes signup invite-only
-- Google needs `{PUBLIC_BASE_URL}/api/auth/callback/google` on the OAuth client
+- Email + password is always on (min 8 characters). Google is on when `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` are set
+- Optional `AUTH_ALLOWED_EMAILS` makes uninvited signup fail
+- **Settings → People**: owner pastes a teammate email, copies `/sign-up?invite=…`. The invite is stored in D1 `workspace_members`. They share this `OPENOUTREACH_WORKSPACE_ID` (not a second tenant)
+- `BETTER_AUTH_SECRET` optional if `CREDENTIAL_ENCRYPTION_KEY` is already ≥32 chars
+- Apply D1 migrations (`0001_better_auth.sql`, `0002_workspace_members.sql`) on deploy
+
+If you still see only an OTP email: the Access application is still in front of the hostname. Disable it or set a Bypass policy for the site, then open `/sign-in`.
 
 ## Troubleshooting
 
