@@ -536,7 +536,7 @@ func (s *Server) handleActivateCampaign(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"name": name, "status": "active",
-		"message":      "Campaign activated. Cron/tick will send due messages. This action is consequential.",
+		"message":      "Campaign is active. Due mail will send in the campaign window. This action is consequential.",
 		"next_actions": []string{"get_campaign_stats", "list_replies"},
 	}})
 }

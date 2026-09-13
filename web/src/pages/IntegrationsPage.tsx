@@ -288,7 +288,8 @@ function ConnectorSetup({
   if (connector.id === "warmup") {
     return (
       <p className="muted">
-        Inbox warming is a status badge only. It never sends through Tick. Missing send/lead connectors stay visible with a connect action.
+        Inbox warming is a status badge only. It never sends campaign mail. Missing send/lead connectors stay visible with a
+        connect action.
       </p>
     );
   }

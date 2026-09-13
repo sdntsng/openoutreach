@@ -179,7 +179,7 @@ export const CONNECTORS: Connector[] = [
     color: "#C47B3A",
     kind: "events",
     mode: "vault",
-    blurb: "Optional health badge only. Warmup traffic never enters Tick.",
+    blurb: "Optional health badge only. Warmup traffic never sends campaign mail.",
     capGroup: "integrations",
     capKey: "warmup",
     vaultProvider: "warmup",

@@ -133,8 +133,10 @@ export default function CampaignDetailPage() {
               : status === "draft"
                 ? "Draft — nothing sends until you review and activate."
                 : status === "active"
-                  ? review?.next_send_note || "Active — due mail sends in the next tick."
-                  : null}
+                  ? review?.next_send_note || "Due mail will send in the campaign window."
+                  : status === "completed"
+                    ? "Sequence finished. Replies still belong in Inbox."
+                    : null}
           </p>
           {review?.next_send_note && status !== "active" ? <p className="muted">{review.next_send_note}</p> : null}
         </div>
