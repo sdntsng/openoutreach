@@ -3,56 +3,56 @@
 [![CI](https://github.com/sdntsng/openoutreach/actions/workflows/ci.yml/badge.svg)](https://github.com/sdntsng/openoutreach/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-3d9b84.svg)](LICENSE)
 
-Self-hosted, **agent-first** cold email outreach built on [cold-cli](https://github.com/andersmyrmel/cold-cli).
+**Your outbound workspace. Your mailbox. Your agents. You decide what sends.**
 
-Humans use the dashboard. Agents use MCP/API. Both operate the same deterministic engine:
+Self-hosted, agent-first cold email for a founder or small team working a modest, researched list. Built on [cold-cli](https://github.com/andersmyrmel/cold-cli) (MIT). Humans use the dashboard. Agents use MCP/API. Both drive the same engine:
 
 **contacts → sequence → schedule → send → thread → reply → suppress → analytics**
 
-## 10-minute quickstart (local)
+Create never sends. Activate is explicit. Mail goes out from a mailbox you own.
+
+## What a new operator does
+
+1. **Deploy your instance** (local docker, or Cloudflare — see below). This is *your* workspace, not a shared pool.
+2. Open the **dashboard** and fill **Project** (who you are, who you want, the offer).
+3. **New campaign** — write the emails in the visual editor. Connecting Gmail is not required to draft.
+4. Import ~20 people onto the **shortlist**. See company, role, why they fit, email check, and previous outreach. Approve or exclude.
+5. **Review** the actual messages beside the sequence, with recipient, window, and readiness problems.
+6. **Activate** only when the checklist is green (`confirm: true` on API/MCP).
+7. Answer replies **in-thread**. Mark interest and **route** the conversation; you should see whether the handoff landed. Retry failed delivery without sending the outreach again.
+
+An agent can retrieve the playbook, prepare the same shortlist and draft, return a rendered preview, and explain blockers. Activation stays a human approval. Both see the same state.
+
+## Local path (your mailbox, working example)
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres
-export $(grep -v '^#' .env | xargs)
-export OPENOUTREACH_MOCK_GMAIL=1
-go run ./cmd/outreachd
+docker compose up --build
 ```
 
-In another terminal:
+- Dashboard: `http://localhost:5173`
+- API / tick: `http://localhost:8080`
+
+With `OPENOUTREACH_MOCK_GMAIL=1` you can walk the motion without OAuth. For a real mailbox, connect Google on **Integrations** (`openid email gmail.send gmail.readonly`). If OAuth fails, the account shows **Reconnect required** or **Saved; connection not verified** — those are different from “a row exists.” Send-only providers (e.g. Resend) can send; they cannot ingest replies here.
+
+Recovery: pause the campaign, reconnect the mailbox, retry a failed handoff from Inbox. Tick never sends while the tick lock is held.
+
+### API example (same engine; still does not send until activate)
 
 ```bash
 curl -s localhost:8080/internal/health | jq
-# Connect mock Gmail account
-curl -s -X POST 'localhost:8080/api/v1/accounts/google/oauth/start?email=you@example.com' | jq
-```
-
-Create a draft campaign (does **not** send):
-
-```bash
 curl -s -X POST localhost:8080/api/v1/campaigns \
   -H 'Content-Type: application/json' \
-  -d '{
-    "name":"demo",
-    "accounts":["you@example.com"],
-    "sequence_yaml":"name: demo\ndefaults:\n  from_name: You\nsteps:\n  - step: 1\n    delay: 0\n    subject: Hi {{first_name}}\n    body: Hello {{first_name}}\n",
-    "leads_csv":"email,first_name\nprospect@acme.com,Ada\n"
-  }' | jq
-```
-
-Preview, then activate only when ready (`confirm` required):
-
-```bash
-curl -s localhost:8080/api/v1/campaigns/demo/preview?render=1 | jq
+  -d '{"name":"demo","sequence_yaml":"name: demo\ndefaults:\n  from_name: You\nsteps:\n  - step: 1\n    delay: 0\n    subject: Hi {{first_name}}\n    body: Hello {{first_name}}\n","leads_csv":"email,first_name,company\nprospect@acme.com,Ada,Acme\n"}' | jq
+# People are on the shortlist. Approve, enroll, GET /campaigns/{id}/review, then:
 curl -s -X POST localhost:8080/api/v1/campaigns/demo/activate \
   -H 'Content-Type: application/json' \
   -d '{"confirm":true}' | jq
-curl -s -X POST localhost:8080/internal/tick -H 'X-Internal-Token: '"$INTERNAL_CONTAINER_TOKEN" | jq
 ```
 
-Dashboard: `cd web && npm install && npm run dev` (proxies `/api` or point Vite at `:8080`).
-
 ## Deploy to Cloudflare
+
+**New account:** follow [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) so the Worker, D1/Postgres, encryption key, and OAuth callback are *yours*. Portable exports (leads CSV, campaign leads) and additive migrations are how you keep ownership across upgrades.
 
 **Existing Worker `openoutreach`:** connect this repo in the dashboard. Do **not** use the Deploy button — it can fork and create a second Worker.
 
@@ -60,21 +60,12 @@ Dashboard: `cd web && npm install && npm run dev` (proxies `/api` or point Vite 
 2. GitHub repo **`sdntsng/openoutreach`**, production branch `main`, root directory `worker`
 3. Build `npm run build` · deploy `npm run deploy:worker`
 
-That deploys onto the live Worker + D1 (`openoutreach.siddhant.site`). Details: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) §B.
-
-**New Cloudflare account only:**
-
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sdntsng/openoutreach&dir=worker)
-
-**CLI:**
 
 ```bash
 cp .env.deploy.example .env.deploy
-# Default: Cloudflare D1. For Postgres set STORAGE=postgres and DATABASE_URL.
 ./scripts/deploy-cf.sh
 ```
-
-Full guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (Postgres options, secrets, Access, OAuth, Cloudflare Email Sending, smoke tests).
 
 ## Docs
 
@@ -92,18 +83,6 @@ Full guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (Postgres options, secrets,
 | [docs/RELEASING.md](docs/RELEASING.md) | Semver tags + CI release |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | PR / test norms |
 
-Product docs site (Mintlify) tracked in [GitHub #16](https://github.com/sdntsng/openoutreach/issues/16) and child issues #17–#23.
-
-## Suggested GitHub metadata
-
-When publishing, set repository topics:
-
-`cold-email` · `outreach` · `gmail-api` · `mcp` · `cloudflare-workers` · `golang` · `self-hosted` · `sqlite` · `postgres`
-
-About blurb:
-
-> Self-hosted agent-first cold email: cold-cli engine + Gmail OAuth + dashboard + MCP.
-
 ## License
 
-MIT — see [LICENSE](LICENSE) and [NOTICE](NOTICE) (includes upstream cold-cli attribution).
+MIT — see [LICENSE](LICENSE) and [NOTICE](NOTICE) (includes upstream **cold-cli** attribution).

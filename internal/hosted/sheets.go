@@ -48,7 +48,7 @@ func (s *Server) handleSheetsImport(w http.ResponseWriter, r *http.Request) {
 	if req.CampaignID == 0 {
 		writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 			"preview": true, "count": len(records), "csv": csvData,
-		}, Warnings: []string{"pass campaign_id to append; preview only"}})
+		}, Warnings: []string{"pass campaign_id to add to the shortlist; preview only"}})
 		return
 	}
 	var campaignName string
@@ -56,14 +56,16 @@ func (s *Server) handleSheetsImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "campaign_not_found", "campaign_id not found")
 		return
 	}
-	res, err := internal.AddLeadsToCampaign(s.Store.DB, campaignName, "", csvData)
+	_ = campaignName
+	n, err := s.upsertShortlist(ws, shortlistIn{CampaignID: req.CampaignID, CSV: csvData, Source: "sheets"})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "import_failed", err.Error())
 		return
 	}
-	_ = LogEnrichmentCall(s.Store.DB, ws, "sheets", "import", fmt.Sprintf("campaign=%d n=%d", req.CampaignID, len(records)), float64(len(records)))
+	_ = LogEnrichmentCall(s.Store.DB, ws, "sheets", "import", fmt.Sprintf("campaign=%d n=%d", req.CampaignID, n), float64(n))
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
-		"campaign_id": req.CampaignID, "imported": res, "count": len(records),
+		"campaign_id": req.CampaignID, "shortlist_added": n, "count": n,
+		"next_actions": []string{"review shortlist", "approve", "enroll"},
 	}})
 }
 

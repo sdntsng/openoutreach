@@ -60,8 +60,7 @@ export default function AccountsPage() {
       </div>
       <p className="muted">
         Connected mailboxes for campaigns. Add or rotate keys on{" "}
-        <Link to="/integrations">Integrations</Link>. Warmup is a status badge only — it never sends
-        via Tick.
+        <Link to="/integrations">Integrations</Link>. Connection health is not the same as “an account row exists.”
       </p>
       {connected && <div className="panel">Account connected.</div>}
       {error && <div className="error">{error}</div>}
@@ -87,10 +86,10 @@ export default function AccountsPage() {
           <tr>
             <th>Email</th>
             <th>Status</th>
+            <th>Connection</th>
             <th>Provider</th>
             <th>Reply</th>
             <th>Domain</th>
-            <th>Warmup</th>
             <th>Daily limit</th>
             <th />
           </tr>
@@ -107,10 +106,10 @@ export default function AccountsPage() {
               <tr key={String(a.id)}>
                 <td>{a.email}</td>
                 <td>{a.status}</td>
+                <td>{connectionHealthLabel(a.oauth_health)}</td>
                 <td>{a.provider || "—"}</td>
-                <td>{a.reply_mode || "—"}</td>
+                <td>{a.reply_mode === "send_only" ? "Send only" : a.reply_mode || "—"}</td>
                 <td>{a.domain_verification || "—"}</td>
-                <td>{a.warmup_status && a.warmup_status !== "unset" ? a.warmup_status : "—"}</td>
                 <td>{a.daily_limit ?? "—"}</td>
                 <td className="row-actions">
                   <button
@@ -183,4 +182,17 @@ export default function AccountsPage() {
       )}
     </div>
   );
+}
+
+function connectionHealthLabel(health?: string): string {
+  switch (health) {
+    case "reconnect_required":
+      return "Reconnect required";
+    case "verified":
+      return "Verified";
+    case "saved":
+      return "Saved; connection not verified";
+    default:
+      return health || "—";
+  }
 }

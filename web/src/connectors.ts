@@ -167,7 +167,7 @@ export const CONNECTORS: Connector[] = [
     color: "#4A90D9",
     kind: "events",
     mode: "vault",
-    blurb: "POST sent / reply / bounce after each tick. Failures never block send.",
+    blurb: "POST sent / reply / bounce / interested. Failed deliveries stay visible and can be retried.",
     capGroup: "integrations",
     capKey: "outbound",
     vaultProvider: "outbound",

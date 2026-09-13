@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, type WorkspacePlaybook } from "../api";
 import { DEFAULT_SEQUENCE } from "../defaults";
+import { SequenceEditor } from "../SequenceEditor";
+import { parseSequenceYAML, sequenceToYAML, type RenderedEmail, type SequenceDoc } from "../sequence";
 import { PageIntro } from "../ui";
 
 const CHIPS = [
@@ -13,7 +15,9 @@ const CHIPS = [
 
 export default function TemplatesPage() {
   const [pb, setPb] = useState<WorkspacePlaybook>({});
-  const [preview, setPreview] = useState<unknown>(null);
+  const [doc, setDoc] = useState<SequenceDoc | null>(null);
+  const [yamlMode, setYamlMode] = useState(false);
+  const [preview, setPreview] = useState<RenderedEmail[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -23,15 +27,24 @@ export default function TemplatesPage() {
       .then((p) => {
         if (!p.default_sequence_yaml) p.default_sequence_yaml = DEFAULT_SEQUENCE;
         setPb(p);
+        const parsed = parseSequenceYAML(p.default_sequence_yaml);
+        if (parsed) setDoc(parsed);
+        else setYamlMode(true);
       })
       .catch((err: Error) => setError(err.message));
   }, []);
+
+  const yaml = useMemo(() => {
+    if (yamlMode) return pb.default_sequence_yaml || "";
+    return doc ? sequenceToYAML(doc) : pb.default_sequence_yaml || "";
+  }, [doc, yamlMode, pb.default_sequence_yaml]);
 
   async function save() {
     setBusy(true);
     setError(null);
     try {
-      setPb(await api.putPlaybook(pb));
+      const next = { ...pb, default_sequence_yaml: yamlMode ? pb.default_sequence_yaml : sequenceToYAML(doc || { name: "outreach", from_name: "You", steps: [] }) };
+      setPb(await api.putPlaybook(next));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -43,12 +56,8 @@ export default function TemplatesPage() {
     setBusy(true);
     setError(null);
     try {
-      const d = await api.draftSequence({
-        icp: pb.audience || pb.company || "your ICP",
-        offer: pb.offer || "our product",
-        tone: pb.template_instructions || "direct",
-      });
-      setPreview(d.preview || d);
+      const d = await api.previewSequence({ sequence_yaml: yaml });
+      setPreview(d.rendered || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -59,8 +68,8 @@ export default function TemplatesPage() {
   return (
     <div>
       <PageIntro title="Email templates">
-        Default sequence for new campaigns. Templates are ReplaceAll YAML — review, then activate the campaign
-        separately.
+        Default sequence for new campaigns. Edit the emails you will send. YAML is available as an advanced view over
+        the same format. Activate still happens on the campaign, with confirm.
       </PageIntro>
       {error && <div className="error">{error}</div>}
       <div className="split-wide">
@@ -90,32 +99,60 @@ export default function TemplatesPage() {
               </button>
             ))}
           </div>
-          <label>
-            Default sequence YAML
-            <textarea
-              rows={16}
-              value={pb.default_sequence_yaml || ""}
-              onChange={(e) => setPb({ ...pb, default_sequence_yaml: e.target.value })}
-            />
-          </label>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                if (!yamlMode && doc) setPb({ ...pb, default_sequence_yaml: sequenceToYAML(doc) });
+                else {
+                  const parsed = parseSequenceYAML(pb.default_sequence_yaml || "");
+                  if (parsed) setDoc(parsed);
+                }
+                setYamlMode(!yamlMode);
+              }}
+            >
+              {yamlMode ? "Visual editor" : "Advanced YAML"}
+            </button>
+          </div>
+          {yamlMode || !doc ? (
+            <label>
+              Default sequence YAML
+              <textarea
+                rows={16}
+                value={pb.default_sequence_yaml || ""}
+                onChange={(e) => setPb({ ...pb, default_sequence_yaml: e.target.value })}
+              />
+            </label>
+          ) : (
+            <SequenceEditor doc={doc} onChange={setDoc} />
+          )}
           <div className="row-actions">
             <button type="button" disabled={busy} onClick={() => void save()}>
               Save templates
             </button>
             <button type="button" className="secondary" disabled={busy} onClick={() => void loadPreview()}>
-              Preview sample
+              Preview this sequence
             </button>
           </div>
         </div>
-        <div className="card stack">
-          <h2 style={{ margin: 0 }}>What leads get</h2>
-          <p className="muted">Sample render with Ada @ Acme. Placeholders: first_name, company, email.</p>
-          {preview ? (
-            <pre className="code">{JSON.stringify(preview, null, 2)}</pre>
-          ) : (
-            <p className="muted">Save a sequence, then preview.</p>
-          )}
-        </div>
+        {yamlMode ? (
+          <div className="card stack">
+            <h2 style={{ margin: 0 }}>What leads get</h2>
+            <p className="muted">Rendered from the YAML you are editing, with Ada @ Acme.</p>
+            {preview?.length ? (
+              preview.map((em) => (
+                <div key={em.step} className="email-preview">
+                  <div className="meta">Step {em.step}</div>
+                  <div className="subject">{em.subject}</div>
+                  <pre>{em.body}</pre>
+                </div>
+              ))
+            ) : (
+              <p className="muted">Save a sequence, then preview.</p>
+            )}
+          </div>
+        ) : null}
       </div>
     </div>
   );

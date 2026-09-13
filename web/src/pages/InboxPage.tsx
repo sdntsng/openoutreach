@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { useSearchParams } from "react-router-dom";
-import { api, type InboxCounts, type InboxThread, type ThreadMessage } from "../api";
+import { Link, useSearchParams } from "react-router-dom";
+import { api, type InboxCounts, type InboxThread, type TeamMember, type ThreadMessage } from "../api";
 import { isHot } from "../defaults";
-import { FeatureLock } from "../ui";
+import { PageIntro } from "../ui";
 import { useWorkspace } from "../workspace";
 
 type Box = "needs" | "replies" | "sent";
@@ -15,10 +15,15 @@ export default function InboxPage() {
   const [counts, setCounts] = useState<InboxCounts>({ needs: 0, replies: 0, sent: 0 });
   const [selected, setSelected] = useState<InboxThread | null>(null);
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
+  const [owner, setOwner] = useState("");
+  const [handoffStatus, setHandoffStatus] = useState("");
+  const [deliveryId, setDeliveryId] = useState(0);
   const [campaigns, setCampaigns] = useState<string[]>([]);
   const [campaign, setCampaign] = useState("all");
   const [reply, setReply] = useState("");
   const [suggestion, setSuggestion] = useState("");
+  const [suggestMeta, setSuggestMeta] = useState("");
+  const [members, setMembers] = useState<TeamMember[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -33,23 +38,43 @@ export default function InboxPage() {
         setCampaigns([...new Set(list.map((t) => t.campaign || "").filter(Boolean))]);
       })
       .catch((err: Error) => setError(err.message));
+    api
+      .listTeam()
+      .then((d) => setMembers(d.members || []))
+      .catch(() => setMembers([]));
   }, [box]);
 
   useEffect(() => {
     if (!selected) {
       setMessages([]);
       setSuggestion("");
+      setSuggestMeta("");
+      setOwner("");
+      setHandoffStatus("");
+      setDeliveryId(0);
       return;
     }
     setError(null);
     api
       .getThread(selected.campaign_id, selected.lead_id)
-      .then((d) => setMessages(d.messages || []))
+      .then((d) => {
+        setMessages(d.messages || []);
+        setOwner(d.conversation?.owner_email || selected.owner_email || "");
+        setHandoffStatus(d.conversation?.handoff_status || selected.handoff_status || "");
+        setDeliveryId(d.conversation?.last_delivery_id || 0);
+      })
       .catch((err: Error) => setError(err.message));
     if (box !== "sent") {
       api
         .suggestReply(selected.campaign_id, selected.lead_id)
-        .then((d) => setSuggestion(d.suggested_body || ""))
+        .then((d) => {
+          setSuggestion(d.suggested_body || "");
+          setSuggestMeta(
+            d.used_playbook
+              ? "Suggestion uses project company/offer plus the classification."
+              : `Suggestion is canned text from classification (${d.source || d.classification || "unknown"}). You still send.`,
+          );
+        })
         .catch(() => setSuggestion(""));
     }
   }, [selected, box]);
@@ -89,15 +114,70 @@ export default function InboxPage() {
     setBusy(true);
     try {
       const next = isHot(selected.classification) ? "neutral" : "hot";
-      await api.classifyThread(selected.campaign_id, selected.lead_id, next);
-      setSelected({ ...selected, classification: next });
-      setThreads((prev) =>
-        prev.map((t) =>
-          t.campaign_id === selected.campaign_id && t.lead_id === selected.lead_id
-            ? { ...t, classification: next }
-            : t,
-        ),
-      );
+      if (next === "hot") {
+        const res = await api.classifyThread(selected.campaign_id, selected.lead_id, next);
+        setSelected({ ...selected, classification: next });
+        setThreads((prev) =>
+          prev.map((t) =>
+            t.campaign_id === selected.campaign_id && t.lead_id === selected.lead_id
+              ? { ...t, classification: next, handoff_status: res.handoff?.status || t.handoff_status }
+              : t,
+          ),
+        );
+        setHandoffStatus(res.handoff?.status || res.conversation?.handoff_status || "");
+        setDeliveryId(res.handoff?.id || res.delivery_id || res.conversation?.last_delivery_id || 0);
+      } else {
+        await api.classifyThread(selected.campaign_id, selected.lead_id, next);
+        setSelected({ ...selected, classification: next });
+        setThreads((prev) =>
+          prev.map((t) =>
+            t.campaign_id === selected.campaign_id && t.lead_id === selected.lead_id
+              ? { ...t, classification: next }
+              : t,
+          ),
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handoff() {
+    if (!selected) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.handoffThread(selected.campaign_id, selected.lead_id, { owner_email: owner, confirm: true });
+      setHandoffStatus(res.handoff?.status || "");
+      setDeliveryId(res.delivery_id || res.handoff?.id || 0);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function retryHandoff() {
+    if (!deliveryId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const d = await api.retryHandoff(deliveryId);
+      setHandoffStatus(d.status || "");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveOwner() {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await api.patchThread(selected.campaign_id, selected.lead_id, { owner_email: owner });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -107,9 +187,18 @@ export default function InboxPage() {
 
   return (
     <div>
-      <h1>Inbox</h1>
+      <PageIntro title="Inbox">
+        Own the conversation in the same thread you sent from. Marking interest queues a handoff —
+        retry if delivery failed, without sending the outreach again.
+      </PageIntro>
       {error && <div className="error">{error}</div>}
-      <FeatureLock ready={ws.hasSender} gate="sender">
+      {!ws.canReply ? (
+        <p className="muted">
+          In-thread replies need a mailbox that can receive mail.{" "}
+          <Link to="/integrations?kind=send">Connect Gmail or Microsoft 365</Link>. Send-only providers cannot ingest
+          replies here.
+        </p>
+      ) : null}
       <div className="tabs">
         {(
           [
@@ -156,9 +245,12 @@ export default function InboxPage() {
                   <div className="row-actions" style={{ justifyContent: "space-between" }}>
                     <div style={{ fontWeight: 500 }}>{t.contact || t.subject || "(no subject)"}</div>
                     {isHot(t.classification) ? <span className="badge badge-hot">Hot</span> : null}
+                    {t.handoff_status === "failed" ? <span className="badge badge-warn">Handoff failed</span> : null}
                   </div>
                   <div className="muted" style={{ fontSize: "0.8rem" }}>
                     {t.campaign} · {t.subject || "—"}
+                    {t.owner_email ? ` · ${t.owner_email}` : ""}
+                    {t.needs_action ? " · needs action" : ""}
                   </div>
                 </button>
               );
@@ -185,6 +277,48 @@ export default function InboxPage() {
                   </button>
                 ) : null}
               </div>
+              <div className="card stack" style={{ margin: "0.75rem 0" }}>
+                <label>
+                  Owner
+                  <input
+                    list="team-owners"
+                    value={owner}
+                    onChange={(e) => setOwner(e.target.value)}
+                    placeholder="teammate@yourcompany.com"
+                  />
+                </label>
+                <datalist id="team-owners">
+                  {members.map((m) => (
+                    <option key={m.email} value={m.email} />
+                  ))}
+                </datalist>
+                <div className="row-actions">
+                  <button type="button" className="secondary" disabled={busy} onClick={() => void saveOwner()}>
+                    Save owner
+                  </button>
+                  <button type="button" disabled={busy} onClick={() => void handoff()}>
+                    Route to teammate
+                  </button>
+                  {handoffStatus === "failed" && deliveryId ? (
+                    <button type="button" className="secondary" disabled={busy} onClick={() => void retryHandoff()}>
+                      Retry handoff
+                    </button>
+                  ) : null}
+                </div>
+                <p className="muted">
+                  Handoff: {handoffStatus || "none"}
+                  {handoffStatus === "failed"
+                    ? " — delivery failed. Retry sends the same thread context, not another outreach email."
+                    : null}
+                  {handoffStatus === "success" ? " — delivered." : null}
+                  {!ws.hasOutbound ? (
+                    <>
+                      {" "}
+                      <Link to="/integrations?connect=outbound">Connect an outbound webhook</Link> so routing can succeed.
+                    </>
+                  ) : null}
+                </p>
+              </div>
               {messages.map((m, i) => (
                 <div className={`message ${m.direction === "outbound" ? "is-out" : ""}`} key={m.id || i}>
                   <div className="meta">
@@ -197,15 +331,18 @@ export default function InboxPage() {
               {box !== "sent" ? (
                 <form className="form-grid panel" onSubmit={onReply}>
                   {suggestion ? (
-                    <button type="button" className="secondary" onClick={() => setReply(suggestion)}>
-                      Use suggested reply
-                    </button>
+                    <>
+                      <button type="button" className="secondary" onClick={() => setReply(suggestion)}>
+                        Use suggested reply
+                      </button>
+                      {suggestMeta ? <p className="muted">{suggestMeta}</p> : null}
+                    </>
                   ) : null}
                   <label>
                     Reply
                     <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={6} required />
                   </label>
-                  <button type="submit" disabled={busy}>
+                  <button type="submit" disabled={busy || !ws.canReply}>
                     Send reply (same Gmail thread)
                   </button>
                 </form>
@@ -214,7 +351,6 @@ export default function InboxPage() {
           )}
         </div>
       </div>
-      </FeatureLock>
     </div>
   );
 }

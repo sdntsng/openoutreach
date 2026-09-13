@@ -10,10 +10,12 @@ export function LeadImport({
   campaignId,
   campaigns,
   onImported,
+  destination = "shortlist",
 }: {
   campaignId?: string | number;
   campaigns?: Campaign[];
   onImported?: () => void;
+  destination?: "shortlist" | "enroll";
 }) {
   const [source, setSource] = useState<Source>("csv");
   const [target, setTarget] = useState(campaignId != null ? String(campaignId) : "");
@@ -35,8 +37,13 @@ export function LeadImport({
     if (cid === "" || cid == null) throw new Error("Pick a campaign to import into");
     const v = await api.validateLeads({ csv: text });
     if (v.invalid > 0) throw new Error(`Fix ${v.invalid} invalid row(s) before import`);
-    await api.addLeads(cid, text);
-    setNote(`Imported ${v.valid} lead${v.valid === 1 ? "" : "s"} into the campaign.`);
+    if (destination === "enroll") {
+      await api.addLeads(cid, text);
+      setNote(`Imported ${v.valid} lead${v.valid === 1 ? "" : "s"} into the campaign.`);
+    } else {
+      await api.addShortlist({ campaign_id: Number(cid), csv: text, source: "csv" });
+      setNote(`${v.valid} ${v.valid === 1 ? "person" : "people"} added to the shortlist — approve before enrollment.`);
+    }
     onImported?.();
   }
 
@@ -60,7 +67,7 @@ export function LeadImport({
         <h2 style={{ marginTop: 0 }}>Import leads</h2>
         <p className="muted">
           CSV file, or a connected source. Keys live on{" "}
-          <Link to="/integrations">Integrations</Link>. Import never activates a campaign.
+          <Link to="/integrations">Integrations</Link>. Import lands on the shortlist and never activates a campaign.
         </p>
       </div>
       {error && <div className="error">{error}</div>}
@@ -173,7 +180,7 @@ export function LeadImport({
               api
                 .sheetsImport({ url: sheetURL.trim(), campaign_id: Number(cid) })
                 .then(() => {
-                  setNote("Sheet import finished.");
+                  setNote("Sheet rows landed on the shortlist.");
                   onImported?.();
                 })
                 .catch((err: Error) => setError(err.message))

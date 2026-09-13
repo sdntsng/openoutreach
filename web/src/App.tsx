@@ -16,6 +16,7 @@ import ProjectPage from "./pages/ProjectPage";
 import TemplatesPage from "./pages/TemplatesPage";
 import SchedulePage from "./pages/SchedulePage";
 import TargetingPage from "./pages/TargetingPage";
+import ShortlistPage from "./pages/ShortlistPage";
 import SignInPage from "./pages/SignInPage";
 import SignUpPage from "./pages/SignUpPage";
 import { WorkspaceProvider, useWorkspace } from "./workspace";
@@ -125,7 +126,7 @@ function AuthedApp() {
             className={({ isActive }) => {
               const sent = new URLSearchParams(location.search).get("box") === "sent";
               const on = isActive && !sent ? "active" : "";
-              return `${on}${ws.hasSender ? "" : " is-gated"}`.trim() || undefined;
+              return `${on}${ws.canReply ? "" : " is-gated"}`.trim() || undefined;
             }}
           >
             Inbox
@@ -138,7 +139,7 @@ function AuthedApp() {
                 location.pathname === "/inbox" && new URLSearchParams(location.search).get("box") === "sent"
                   ? "active"
                   : "";
-              return `${on}${ws.hasSender ? "" : " is-gated"}`.trim() || undefined;
+              return `${on}${ws.canReply ? "" : " is-gated"}`.trim() || undefined;
             }}
           >
             Sent
@@ -166,6 +167,9 @@ function AuthedApp() {
           <NavLink to="/leads" className={({ isActive }) => (isActive ? "active" : undefined)}>
             Leads
           </NavLink>
+          <NavLink to="/shortlist" className={({ isActive }) => (isActive ? "active" : undefined)}>
+            Shortlist
+          </NavLink>
           <NavLink to="/accounts" className={({ isActive }) => (isActive ? "active" : undefined)}>
             Sending Accounts
           </NavLink>
@@ -183,9 +187,7 @@ function AuthedApp() {
           ))}
           <NavLink
             to="/campaigns/new"
-            className={({ isActive }) =>
-              `${isActive ? "active nav-cta" : "nav-cta"}${ws.hasSender ? "" : " is-gated"}`
-            }
+            className={({ isActive }) => (isActive ? "active nav-cta" : "nav-cta")}
           >
             + New campaign
           </NavLink>
@@ -215,6 +217,7 @@ function AuthedApp() {
           <Route path="/campaigns" element={<CampaignsPage />} />
           <Route path="/campaigns/new" element={<CampaignCreatePage />} />
           <Route path="/campaigns/:id" element={<CampaignDetailPage />} />
+          <Route path="/shortlist" element={<ShortlistPage />} />
           <Route path="/inbox" element={<InboxPage />} />
           <Route path="/leads" element={<LeadsPage />} />
           <Route path="/accounts" element={<AccountsPage />} />

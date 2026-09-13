@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, asArray, type Campaign, type OverviewStats, type Period } from "../api";
+import { api, asArray, type Campaign, type OverviewAction, type OverviewStats, type Period } from "../api";
 import { CampaignTable } from "../CampaignTable";
-import { PageIntro, StatusBadge } from "../ui";
-import { GATES, gateReady, useWorkspace, type GateId } from "../workspace";
+import { PageIntro } from "../ui";
+import { useWorkspace } from "../workspace";
 
 const PERIODS: { id: Period; label: string }[] = [
   { id: "today", label: "Today" },
@@ -14,16 +14,6 @@ const PERIODS: { id: Period; label: string }[] = [
 
 const OPEN_TOOLTIP =
   "Approx. opens are inferred from tracking pixel loads. Image proxies, privacy features, and prefetch can inflate or deflate this number — treat it as directional, not exact.";
-
-type CapStatus = "ready" | "connect" | "soon";
-
-interface Capability {
-  title: string;
-  blurb: string;
-  to: string;
-  status: CapStatus;
-  gate?: GateId;
-}
 
 function pct(n: number | undefined): string {
   if (n == null || Number.isNaN(n)) return "—";
@@ -63,143 +53,54 @@ export default function OverviewPage() {
     };
   }, [period]);
 
-  const groups: { label: string; items: Capability[] }[] = [
-    {
-      label: "Find",
-      items: [
-        {
-          title: "CSV import",
-          blurb: "Upload or paste. Always on — no vendor key.",
-          to: "/leads",
-          status: "ready",
-        },
-        {
-          title: "Apollo",
-          blurb: "People search. Preview, then import into a draft.",
-          to: gateReady(ws, "apollo") ? "/leads" : GATES.apollo.to,
-          status: gateReady(ws, "apollo") ? "ready" : "connect",
-          gate: "apollo",
-        },
-        {
-          title: "Google Sheets",
-          blurb: "Published sheet or CSV URL into a campaign.",
-          to: gateReady(ws, "sheets") ? "/leads" : GATES.sheets.to,
-          status: gateReady(ws, "sheets") ? "ready" : "connect",
-          gate: "sheets",
-        },
-        {
-          title: "Clay / webhook",
-          blurb: "Signed ingest. Never activates on arrival.",
-          to: gateReady(ws, "clay") ? "/leads" : GATES.clay.to,
-          status: gateReady(ws, "clay") ? "ready" : "connect",
-          gate: "clay",
-        },
-      ],
-    },
-    {
-      label: "Reach",
-      items: [
-        {
-          title: "Sequences",
-          blurb: "Draft YAML, then activate with confirm.",
-          to: gateReady(ws, "sender") ? "/campaigns/new" : GATES.sender.to,
-          status: gateReady(ws, "sender") ? "ready" : "connect",
-          gate: "sender",
-        },
-        {
-          title: "Sending accounts",
-          blurb: "Your Gmail, Microsoft 365, or SMTP — not a rented pool.",
-          to: "/integrations?kind=send",
-          status: gateReady(ws, "sender") ? "ready" : "connect",
-          gate: "sender",
-        },
-        {
-          title: "Inbox warming",
-          blurb: "Badge only. Warmup traffic never enters Tick.",
-          to: "/integrations?connect=warmup",
-          status: "soon",
-        },
-      ],
-    },
-    {
-      label: "Reply",
-      items: [
-        {
-          title: "Unified inbox",
-          blurb: "Needs reply, got reply, sent — same Gmail thread.",
-          to: gateReady(ws, "sender") ? "/inbox" : GATES.sender.to,
-          status: gateReady(ws, "sender") ? "ready" : "connect",
-          gate: "sender",
-        },
-        {
-          title: "Suggested replies",
-          blurb: "Uses project facts. You still send.",
-          to: gateReady(ws, "sender") ? "/inbox" : GATES.sender.to,
-          status: gateReady(ws, "sender") ? "ready" : "connect",
-          gate: "sender",
-        },
-      ],
-    },
-    {
-      label: "Route",
-      items: [
-        {
-          title: "Outbound webhook",
-          blurb: "POST sent / reply / bounce. Failures never block send.",
-          to: GATES.outbound.to,
-          status: gateReady(ws, "outbound") ? "ready" : "connect",
-          gate: "outbound",
-        },
-        {
-          title: "MCP / agents",
-          blurb: "Same engine as the dashboard. Create ≠ send.",
-          to: gateReady(ws, "mcp") ? "/settings" : GATES.mcp.to,
-          status: gateReady(ws, "mcp") ? "ready" : "connect",
-          gate: "mcp",
-        },
-        {
-          title: "LinkedIn steps",
-          blurb: "Webhook ingest only. We do not scrape Sales Nav.",
-          to: "/integrations",
-          status: "soon",
-        },
-      ],
-    },
-  ];
+  const actions: OverviewAction[] = stats?.actions || [];
+  const primary = stats?.primary_action;
 
   return (
     <div>
-      <PageIntro title="Command center">
-        One motion: find leads, reach from your mailbox, reply in-thread, route the hot ones. A
-        capability stays visible when the first integration is missing — connect that, then use it.
+      <PageIntro title="Overview">
+        Your outbound workspace. Choose a small list, review what they will receive, activate on purpose, and own the
+        replies. Connectors live on <Link to="/integrations">Integrations</Link>.
       </PageIntro>
 
+      {primary ? (
+        <Link to={primary.to} className="card action-card is-primary">
+          <div>
+            <div className="connector-name">{countLabel(primary)}</div>
+            <p className="muted">{primary.detail}</p>
+          </div>
+          <span className="badge badge-warn">Next</span>
+        </Link>
+      ) : (
+        <Link to="/campaigns/new" className="card action-card is-primary">
+          <div>
+            <div className="connector-name">Prepare a small campaign</div>
+            <p className="muted">Start with about 20 people. Review the emails, then activate when you are ready.</p>
+          </div>
+          <span className="badge">Start</span>
+        </Link>
+      )}
+
       <div className="motion-grid">
-        {groups.map((g) => (
-          <section key={g.label} className="card motion-col">
-            <div className="nav-label">{g.label}</div>
-            {g.items.map((item) => (
-              <Link
-                key={item.title}
-                to={item.to}
-                className={`motion-item ${item.status === "ready" ? "" : "is-gated"}`}
-              >
-                <div>
-                  <div className="connector-name">{item.title}</div>
-                  <p className="muted">{item.blurb}</p>
-                </div>
-                {item.status === "ready" ? (
-                  <StatusBadge ok on="Ready" />
-                ) : item.status === "soon" ? (
-                  <span className="badge">Soon</span>
-                ) : (
-                  <span className="badge badge-warn">Connect</span>
-                )}
-              </Link>
-            ))}
-          </section>
+        {actions.map((item) => (
+          <Link key={item.key} to={item.to} className={`card action-card ${item.count > 0 ? "" : "is-quiet"}`}>
+            <div>
+              <div className="connector-name">{countLabel(item)}</div>
+              <p className="muted">{item.detail}</p>
+            </div>
+            <span className="metric-count">{item.count}</span>
+          </Link>
         ))}
       </div>
+
+      <p className="muted" style={{ marginTop: "0.25rem" }}>
+        {ws.canSend
+          ? ws.canReply
+            ? "Mailbox can send and receive replies."
+            : "A mailbox can send, but reply ingestion is not available on this provider."
+          : "No verified mailbox yet — you can still draft and review."}{" "}
+        {ws.hasOutbound ? "Outbound webhook is connected." : "Handoffs need an outbound webhook on Integrations."}
+      </p>
 
       <div className="filters" style={{ marginTop: "1.5rem" }}>
         {PERIODS.map((p) => (
@@ -248,7 +149,23 @@ export default function OverviewPage() {
         Hover <strong>Approx. opens</strong> for notes on image-proxy noise.
       </p>
       <h2>Campaigns</h2>
-      <CampaignTable campaigns={campaigns} />
+      <CampaignTable campaigns={campaigns} empty="No campaigns yet. Prepare a draft — activate is a separate step." />
     </div>
   );
+}
+
+function countLabel(item: OverviewAction): string {
+  const n = item.count;
+  switch (item.key) {
+    case "shortlist":
+      return `${n} lead${n === 1 ? "" : "s"} awaiting review`;
+    case "drafts":
+      return `${n} draft${n === 1 ? "" : "s"} ready`;
+    case "replies":
+      return `${n} ${n === 1 ? "reply needs" : "replies need"} attention`;
+    case "handoff":
+      return `${n} handoff${n === 1 ? "" : "s"} failed`;
+    default:
+      return `${n} ${item.label}`;
+  }
 }

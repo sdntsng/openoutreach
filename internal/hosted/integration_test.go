@@ -82,7 +82,7 @@ steps:
 	leads := "email,first_name,company\nlead@acme.com,Ada,Acme\n"
 	res, err := engine.CreateCampaign(db, engine.CreateCampaignOpts{
 		WorkspaceID: "default", Name: "test-camp", SequenceInline: seq, LeadsInline: leads,
-		AccountEmails: []string{"sender@example.com"},
+		AccountEmails:   []string{"sender@example.com"},
 		SendWindowStart: "00:00", SendWindowEnd: "23:59", SendDays: "0,1,2,3,4,5,6", Timezone: "UTC",
 	})
 	if err != nil {
@@ -180,7 +180,7 @@ steps:
 	leads := "email,first_name\none@x.com,One\ntwo@x.com,Two\n"
 	_, err = engine.CreateCampaign(db, engine.CreateCampaignOpts{
 		WorkspaceID: "default", Name: "burst", SequenceInline: seq, LeadsInline: leads,
-		AccountEmails: []string{"sender2@example.com"},
+		AccountEmails:   []string{"sender2@example.com"},
 		SendWindowStart: "00:00", SendWindowEnd: "23:59", SendDays: "0,1,2,3,4,5,6", Timezone: "UTC",
 	})
 	if err != nil {
@@ -221,7 +221,10 @@ func TestActivateRequiresConfirm(t *testing.T) {
 	req2.Header.Set("Content-Type", "application/json")
 	rr2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr2, req2)
-	if rr2.Code != http.StatusOK {
-		t.Fatalf("expected 200 with confirm, got %d %s", rr2.Code, rr2.Body.String())
+	if rr2.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 not_ready on empty draft, got %d %s", rr2.Code, rr2.Body.String())
+	}
+	if !strings.Contains(rr2.Body.String(), "not_ready") {
+		t.Fatalf("expected not_ready: %s", rr2.Body.String())
 	}
 }

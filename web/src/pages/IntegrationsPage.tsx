@@ -93,8 +93,8 @@ export default function IntegrationsPage() {
         <div>
           <h2 style={{ margin: "0 0 0.35rem" }}>Outbound webhook</h2>
           <p className="muted" style={{ margin: 0 }}>
-            New replies, bounces, and sends POST to your URL — Slack, Make, HubSpot workflows, or a
-            Zap. Paste the URL under Events.
+            Interested conversations POST to your URL with thread context. Failed deliveries stay
+            visible and can be retried without repeating outreach.
           </p>
         </div>
         <button type="button" onClick={() => open("outbound")}>
@@ -121,12 +121,11 @@ export default function IntegrationsPage() {
         {visible.map((c) => {
           const enabled = connectorEnabled(c, caps);
           const on = connectorConnected(c, accounts, creds);
-          const soon = c.id === "warmup";
           return (
             <button
               key={c.id}
               type="button"
-              className={`connector-card ${enabled && !soon ? "" : "is-off"} ${connect === c.id ? "is-active" : ""}`}
+              className={`connector-card ${enabled ? "" : "is-off"} ${connect === c.id ? "is-active" : ""}`}
               onClick={() => open(c.id)}
             >
               <BrandMark connector={c} />
@@ -134,15 +133,11 @@ export default function IntegrationsPage() {
                 <div className="connector-name">{c.name}</div>
                 <p className="muted">{c.blurb}</p>
               </div>
-              {soon ? (
-                <span className="badge">Soon</span>
-              ) : (
-                <StatusBadge
-                  ok={enabled && on}
-                  on={c.mode === "file" ? "Ready" : "Connected"}
-                  off={enabled ? "Not connected" : "Off"}
-                />
-              )}
+              <StatusBadge
+                ok={enabled && on}
+                on={c.mode === "file" ? "Ready" : "Connected"}
+                off={enabled ? "Not connected" : "Off"}
+              />
             </button>
           );
         })}
@@ -293,8 +288,7 @@ function ConnectorSetup({
   if (connector.id === "warmup") {
     return (
       <p className="muted">
-        Inbox warming is listed so the motion is visible. The badge can be stored later — warmup
-        traffic never enters Tick.
+        Inbox warming is a status badge only. It never sends through Tick. Missing send/lead connectors stay visible with a connect action.
       </p>
     );
   }

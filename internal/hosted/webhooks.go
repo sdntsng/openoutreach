@@ -162,14 +162,15 @@ func (s *Server) resolveIngestCampaign(ws string, campaignID int64, campaignName
 	if !create {
 		return 0, "", "", false, "campaign not found; pass create_campaign to open a draft (never activates)", nil
 	}
+	var emails []string
 	var email string
-	if qerr := queryRow(s.Store.DB, `SELECT email FROM accounts WHERE workspace_id = ? AND status = 'active' ORDER BY id LIMIT 1`, ws).Scan(&email); qerr != nil {
-		return 0, "", "", false, "", fmt.Errorf("at least one active sending account is required to create a draft campaign")
+	if qerr := queryRow(s.Store.DB, `SELECT email FROM accounts WHERE workspace_id = ? AND status = 'active' ORDER BY id LIMIT 1`, ws).Scan(&email); qerr == nil && strings.TrimSpace(email) != "" {
+		emails = []string{email}
 	}
 	res, err := internal.CreateDraftCampaign(s.Store.DB, internal.CreateDraftCampaignOpts{
 		WorkspaceID:   ws,
 		Name:          campaignName,
-		AccountEmails: []string{email},
+		AccountEmails: emails,
 	})
 	if err != nil {
 		var retryID int64
@@ -183,68 +184,20 @@ func (s *Server) resolveIngestCampaign(ws string, campaignID int64, campaignName
 }
 
 func (s *Server) ingestLeadsForCampaign(campaignID int64, campaignName, csvData string) (any, []string, error) {
-	var seqContent string
-	_ = queryRow(s.Store.DB, `SELECT COALESCE(sequence_content, '') FROM campaigns WHERE id = ?`, campaignID).Scan(&seqContent)
-	if strings.TrimSpace(seqContent) != "" {
-		res, err := internal.AddLeadsToCampaign(s.Store.DB, campaignName, "", csvData)
-		return res, nil, err
+	var ws string
+	if err := queryRow(s.Store.DB, `SELECT workspace_id FROM campaigns WHERE id = ?`, campaignID).Scan(&ws); err != nil {
+		return nil, nil, err
 	}
-	records, parseWarnings, err := internal.ParseLeadsCSVFromReader(strings.NewReader(csvData))
+	n, err := s.upsertShortlist(ws, shortlistIn{CampaignID: campaignID, CSV: csvData, Source: "webhook"})
 	if err != nil {
-		return nil, parseWarnings, err
-	}
-	added, skipped, err := s.attachDraftLeads(campaignID, records)
-	if err != nil {
-		return nil, parseWarnings, err
+		return nil, nil, err
 	}
 	return map[string]any{
 		"campaign":        campaignName,
-		"leads_added":     added,
-		"leads_skipped":   skipped,
+		"shortlist_added": n,
+		"leads_added":     0,
 		"scheduled_sends": 0,
-	}, append(parseWarnings, "draft has no sequence; leads attached without scheduled_sends"), nil
-}
-
-func (s *Server) attachDraftLeads(campaignID int64, records []internal.LeadRecord) (added, skipped int, err error) {
-	for _, rec := range records {
-		email := strings.ToLower(strings.TrimSpace(rec.Fields["email"]))
-		if email == "" || !strings.Contains(email, "@") {
-			skipped++
-			continue
-		}
-		customJSON := internal.BuildCustomFieldsJSON(rec.Fields)
-		domain := internal.ExtractDomain(email)
-		if _, err := exec(s.Store.DB, `INSERT INTO leads (email, first_name, last_name, company, domain, custom_fields)
-			VALUES (?, ?, ?, ?, ?, ?)
-			ON CONFLICT(email) DO NOTHING`,
-			email, rec.Fields["first_name"], rec.Fields["last_name"], rec.Fields["company"], domain, customJSON); err != nil {
-			return added, skipped, err
-		}
-		_, _ = exec(s.Store.DB, `UPDATE leads SET first_name = ?, last_name = ?, company = ?, domain = ?, custom_fields = ?
-			WHERE email = ?`, rec.Fields["first_name"], rec.Fields["last_name"], rec.Fields["company"], domain, customJSON, email)
-		var leadID int64
-		var globalStatus string
-		if err := queryRow(s.Store.DB, `SELECT id, global_status FROM leads WHERE email = ?`, email).Scan(&leadID, &globalStatus); err != nil {
-			return added, skipped, err
-		}
-		if globalStatus == "blacklisted" || globalStatus == "bounced" {
-			skipped++
-			continue
-		}
-		var existing int
-		if err := queryRow(s.Store.DB, `SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ? AND lead_id = ?`, campaignID, leadID).Scan(&existing); err != nil {
-			return added, skipped, err
-		}
-		if existing > 0 {
-			skipped++
-			continue
-		}
-		if _, err := exec(s.Store.DB, `INSERT INTO campaign_leads (campaign_id, lead_id, status) VALUES (?, ?, 'active')`, campaignID, leadID); err != nil {
-			return added, skipped, err
-		}
-		added++
-	}
-	return added, skipped, nil
+	}, []string{"People landed on the shortlist — approve them before enrollment"}, nil
 }
 
 func webhookCampaignHint(body []byte) (int64, string, bool) {

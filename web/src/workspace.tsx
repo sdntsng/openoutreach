@@ -11,6 +11,8 @@ export interface WorkspaceState {
   caps: Capabilities | null;
   setup: SetupStatus | null;
   hasSender: boolean;
+  canSend: boolean;
+  canReply: boolean;
   hasApollo: boolean;
   hasSheets: boolean;
   hasClay: boolean;
@@ -26,6 +28,8 @@ const empty: Omit<WorkspaceState, "refresh"> = {
   caps: null,
   setup: null,
   hasSender: false,
+  canSend: false,
+  canReply: false,
   hasApollo: false,
   hasSheets: false,
   hasClay: false,
@@ -55,6 +59,15 @@ function derive(
     caps,
     setup,
     hasSender: accounts.length > 0,
+    canSend: accounts.some(
+      (a) => (a.status || "active") === "active" && a.oauth_health !== "reconnect_required",
+    ),
+    canReply: accounts.some(
+      (a) =>
+        (a.status || "active") === "active" &&
+        a.oauth_health !== "reconnect_required" &&
+        a.reply_mode !== "send_only",
+    ),
     hasApollo: on("apollo"),
     hasSheets: on("sheets"),
     hasClay: on("clay") || on("webhook"),
@@ -100,7 +113,7 @@ export const GATES: Record<
 > = {
   sender: {
     title: "Connect a sending account",
-    ask: "Sequences send from a mailbox you own. Google, Microsoft 365, or SMTP first — we never send through Instantly or Smartlead.",
+    ask: "Activate and in-thread replies need a mailbox you own. You can still draft a sequence and review a shortlist first.",
     to: "/integrations?kind=send",
     connectorId: "gmail",
   },
@@ -124,7 +137,7 @@ export const GATES: Record<
   },
   outbound: {
     title: "Connect an outbound webhook",
-    ask: "Route replies and bounces to Slack, Make, or a CRM workflow. Failures never block send.",
+    ask: "Route interested conversations to Slack, Make, or a teammate workflow. Failed deliveries stay visible and can be retried without sending outreach again.",
     to: "/integrations?connect=outbound",
     connectorId: "outbound",
   },
@@ -138,7 +151,7 @@ export const GATES: Record<
 export function gateReady(ws: WorkspaceState, id: GateId): boolean {
   switch (id) {
     case "sender":
-      return ws.hasSender;
+      return ws.canSend;
     case "apollo":
       return ws.hasApollo;
     case "sheets":

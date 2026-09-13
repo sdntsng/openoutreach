@@ -77,10 +77,7 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 			SELECT COUNT(*) FROM events
 			WHERE account_id = ? AND type = 'sent' AND timestamp >= ?`, list[i].ID, cutoff).Scan(&list[i].SentToday)
 		oauth, _ := GetHostedKV(s.Store.DB, "account_oauth:"+strings.ToLower(list[i].Email))
-		if oauth == "" {
-			oauth = "ok"
-		}
-		list[i].OAuthHealth = oauth
+		list[i].OAuthHealth = accountConnectionHealth(s.Store.DB, list[i].ID, list[i].Provider, list[i].Email, oauth)
 	}
 	if list == nil {
 		list = []acct{}
@@ -100,9 +97,7 @@ func (s *Server) handleAccountStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oauth, _ := GetHostedKV(s.Store.DB, "account_oauth:"+strings.ToLower(email))
-	if oauth == "" {
-		oauth = "ok"
-	}
+	oauth = accountConnectionHealth(s.Store.DB, acct.ID, acct.Provider, email, oauth)
 	replyMode, domainVer := mailboxSurface(acct.Provider)
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"id": acct.ID, "email": acct.Email, "status": acct.Status,
@@ -127,6 +122,27 @@ func mailboxSurface(provider string) (replyMode, domainVerification string) {
 	default:
 		return "oauth", "oauth"
 	}
+}
+
+func accountConnectionHealth(db *sql.DB, accountID int64, provider, email, kv string) string {
+	if strings.EqualFold(strings.TrimSpace(kv), "reconnect_required") {
+		return "reconnect_required"
+	}
+	p := strings.ToLower(strings.TrimSpace(provider))
+	switch p {
+	case "hosted-mock", "mock":
+		return "verified"
+	}
+	var n int
+	_ = queryRow(db, `SELECT COUNT(*) FROM google_credentials WHERE account_id = ?`, accountID).Scan(&n)
+	if n > 0 {
+		return "verified"
+	}
+	_ = queryRow(db, `SELECT COUNT(*) FROM microsoft_credentials WHERE account_id = ?`, accountID).Scan(&n)
+	if n > 0 {
+		return "verified"
+	}
+	return "saved"
 }
 
 func workspaceWarmupStatus(db *sql.DB, ws string) string {
@@ -426,38 +442,20 @@ func (s *Server) handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 		req.LeadsCSV = filtered
 		skipped = n
 	}
-	if req.DraftOnly || (req.SequenceYAML == "" && req.LeadsCSV == "") {
-		res, err := engine.CreateDraftCampaign(s.Store.DB, engine.CreateDraftCampaignOpts{
-			WorkspaceID: ws, Name: req.Name, AccountEmails: req.Accounts,
-			SendWindowStart: req.SendWindowStart, SendWindowEnd: req.SendWindowEnd,
-			SendDays: req.SendDays, Timezone: req.Timezone,
-		})
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "create_failed", err.Error())
-			return
-		}
-		if req.OpenTracking {
-			_ = SetHostedKV(s.Store.DB, fmt.Sprintf("campaign_open_tracking:%d", res.ID), "1")
-		}
-		warnings := append([]string{}, res.Warnings...)
-		if skipped > 0 {
-			warnings = append(warnings, fmt.Sprintf("%d suppressed leads skipped", skipped))
-		}
-		writeJSON(w, http.StatusCreated, envelope{Data: map[string]any{
-			"campaign_id": res.ID, "status": "draft", "name": res.Name,
-			"lead_count": 0, "warnings": warnings,
-			"next_actions": []string{"add_leads", "preview_campaign", "activate_campaign"},
-		}, Warnings: warnings})
-		return
-	}
-	res, err := engine.CreateCampaign(s.Store.DB, engine.CreateCampaignOpts{
-		WorkspaceID: ws, Name: req.Name, SequenceInline: req.SequenceYAML, LeadsInline: req.LeadsCSV,
-		AccountEmails: req.Accounts, SendWindowStart: req.SendWindowStart, SendWindowEnd: req.SendWindowEnd,
+	res, err := engine.CreateDraftCampaign(s.Store.DB, engine.CreateDraftCampaignOpts{
+		WorkspaceID: ws, Name: req.Name, AccountEmails: req.Accounts,
+		SendWindowStart: req.SendWindowStart, SendWindowEnd: req.SendWindowEnd,
 		SendDays: req.SendDays, Timezone: req.Timezone,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "create_failed", err.Error())
 		return
+	}
+	if strings.TrimSpace(req.SequenceYAML) != "" {
+		if err := storeCampaignSequence(s.Store.DB, res.ID, req.SequenceYAML); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid_sequence", err.Error())
+			return
+		}
 	}
 	if req.OpenTracking {
 		_ = SetHostedKV(s.Store.DB, fmt.Sprintf("campaign_open_tracking:%d", res.ID), "1")
@@ -466,14 +464,22 @@ func (s *Server) handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 	if skipped > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d suppressed leads skipped", skipped))
 	}
+	added := 0
+	if strings.TrimSpace(req.LeadsCSV) != "" {
+		n, serr := s.upsertShortlist(ws, shortlistIn{
+			CampaignID: res.ID, CSV: req.LeadsCSV, Source: "csv",
+		})
+		if serr != nil {
+			writeErr(w, http.StatusBadRequest, "shortlist_failed", serr.Error())
+			return
+		}
+		added = n
+		warnings = append(warnings, "People landed on the shortlist — approve them before enrollment")
+	}
 	writeJSON(w, http.StatusCreated, envelope{Data: map[string]any{
-		"campaign_id":        res.ID,
-		"status":             "draft",
-		"name":               res.Name,
-		"lead_count":         res.Leads,
-		"scheduled_messages": res.ScheduledSends,
-		"warnings":           warnings,
-		"next_actions":       []string{"preview_campaign", "activate_campaign"},
+		"campaign_id": res.ID, "status": "draft", "name": res.Name,
+		"lead_count": 0, "shortlist_added": added, "warnings": warnings,
+		"next_actions": []string{"review_shortlist", "preview_campaign", "activate_campaign"},
 	}, Warnings: warnings})
 }
 
@@ -521,6 +527,9 @@ func (s *Server) handleActivateCampaign(w http.ResponseWriter, r *http.Request) 
 			"Set confirm=true only after explicit approval. Creating a campaign does not send mail.")
 		return
 	}
+	if !s.activateIfReady(w, r, name) {
+		return
+	}
 	if err := engine.CampaignStateTransition(s.Store.DB, name, "activate", "draft", "active"); err != nil {
 		writeErr(w, http.StatusBadRequest, "activate_failed", err.Error())
 		return
@@ -559,29 +568,26 @@ func (s *Server) handleResumeCampaign(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePreviewCampaign(w http.ResponseWriter, r *http.Request) {
-	name, err := s.resolveCampaign(r)
+	rev, err := s.buildCampaignReview(r, r.URL.Query().Get("lead"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	name, _ := s.resolveCampaign(r)
 	id, status, preview, err := internal.GetCampaignPreview(s.Store.DB, name)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "preview_failed", err.Error())
-		return
-	}
-	lead := r.URL.Query().Get("lead")
-	var rendered any
-	if r.URL.Query().Get("render") == "1" {
-		rendered, err = internal.GetCampaignRenderedPreview(s.Store.DB, name, lead)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "render_failed", err.Error())
-			return
-		}
+		preview = nil
+		_ = id
+		_ = status
 	}
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
-		"campaign_id": id, "status": status, "schedule": preview, "rendered": rendered,
-		"next_actions": []string{"activate_campaign"},
-	}})
+		"campaign_id": rev.CampaignID, "status": rev.Status,
+		"schedule": preview, "rendered": rev.Rendered,
+		"sequence": rev.Sequence, "preview_lead": rev.PreviewLead,
+		"checklist": rev.Checklist, "ready": rev.Ready,
+		"next_send": rev.NextSend, "next_send_note": rev.NextSendNote,
+		"next_actions": rev.NextActions,
+	}, Warnings: rev.Warnings})
 }
 
 func (s *Server) handleCampaignStats(w http.ResponseWriter, r *http.Request) {
@@ -740,7 +746,6 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	defer rows.Close()
 	type item struct {
 		CampaignID     int64  `json:"campaign_id"`
 		LeadID         int64  `json:"lead_id"`
@@ -754,18 +759,40 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		Type           string `json:"type"`
 		NeedsReply     bool   `json:"needs_reply"`
 		Timestamp      string `json:"timestamp"`
+		OwnerEmail     string `json:"owner_email,omitempty"`
+		HandoffStatus  string `json:"handoff_status,omitempty"`
+		NeedsAction    bool   `json:"needs_action"`
 	}
-	var list []item
+	type scanned struct {
+		item
+		occurred time.Time
+	}
+	var raw []scanned
 	for rows.Next() {
-		var it item
-		var occurred time.Time
-		if err := rows.Scan(&it.CampaignID, &it.LeadID, &it.Contact, &it.Company, &it.Campaign, &it.Sender,
-			&it.Subject, &it.LatestMessage, &occurred, &it.Type, &it.Classification); err != nil {
+		var row scanned
+		if err := rows.Scan(&row.CampaignID, &row.LeadID, &row.Contact, &row.Company, &row.Campaign, &row.Sender,
+			&row.Subject, &row.LatestMessage, &row.occurred, &row.Type, &row.Classification); err != nil {
+			rows.Close()
 			writeErr(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
-		it.Timestamp = occurred.UTC().Format(time.RFC3339)
-		it.NeedsReply = box == "needs" || (box != "sent" && !hasLaterOutbound(s.Store.DB, it.CampaignID, it.LeadID, occurred))
+		row.Timestamp = row.occurred.UTC().Format(time.RFC3339)
+		raw = append(raw, row)
+	}
+	scanErr := rows.Err()
+	rows.Close()
+	if scanErr != nil {
+		writeErr(w, http.StatusInternalServerError, "db_error", scanErr.Error())
+		return
+	}
+	list := make([]item, 0, len(raw))
+	for _, row := range raw {
+		it := row.item
+		it.NeedsReply = box == "needs" || (box != "sent" && !hasLaterOutbound(s.Store.DB, it.CampaignID, it.LeadID, row.occurred))
+		cv := s.conversationView(it.CampaignID, it.LeadID)
+		it.OwnerEmail = cv.OwnerEmail
+		it.HandoffStatus = cv.HandoffStatus
+		it.NeedsAction = it.NeedsReply || cv.HandoffStatus == "failed" || cv.HandoffStatus == "queued"
 		list = append(list, it)
 	}
 	if list == nil {
@@ -848,7 +875,7 @@ func (s *Server) handleGetThread(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "thread_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{"messages": msgs}})
+	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{"messages": msgs, "conversation": s.conversationView(cid, lid)}})
 }
 
 func (s *Server) handleThreadReply(w http.ResponseWriter, r *http.Request) {
@@ -936,7 +963,19 @@ func (s *Server) handleClassify(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "classify_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{"status": "classified", "classification": req.Classification}})
+	out := map[string]any{"status": "classified", "classification": req.Classification}
+	if isInterestClass(req.Classification) {
+		id, herr := s.queueInterestedHandoff(ws, cid, lid, "")
+		if herr != nil {
+			writeErr(w, http.StatusInternalServerError, "handoff_failed", herr.Error())
+			return
+		}
+		s.dispatchOutboundEvents(ws)
+		out["handoff"] = s.loadDelivery(id)
+		out["delivery_id"] = id
+	}
+	out["conversation"] = s.conversationView(cid, lid)
+	writeJSON(w, http.StatusOK, envelope{Data: out})
 }
 
 func (s *Server) handleValidateLeads(w http.ResponseWriter, r *http.Request) {
@@ -1074,12 +1113,45 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	if sent > 0 {
 		replyRate = float64(replies) / float64(sent) * 100
 	}
+	var needsReply, pendingReview, drafts, failedHandoff int
+	needsReply = countNeedsReply(s.Store.DB, ws)
+	pendingReview = countPendingShortlist(s.Store.DB, ws)
+	drafts = countDraftsReady(s.Store.DB, ws)
+	failedHandoff = countFailedHandoffs(s.Store.DB, ws)
+
+	type action struct {
+		Key    string `json:"key"`
+		Label  string `json:"label"`
+		Count  int    `json:"count"`
+		To     string `json:"to"`
+		Detail string `json:"detail"`
+	}
+	actions := []action{
+		{Key: "handoff", Label: "handoff failed", Count: failedHandoff, To: "/inbox", Detail: "Retry the handoff — do not send the outreach again."},
+		{Key: "replies", Label: "replies need attention", Count: needsReply, To: "/inbox", Detail: "Answer in the same thread."},
+		{Key: "shortlist", Label: "leads awaiting review", Count: pendingReview, To: "/shortlist", Detail: "Approve or exclude before enrollment."},
+		{Key: "drafts", Label: "drafts ready to review", Count: drafts, To: "/campaigns", Detail: "Review the actual emails, then activate."},
+	}
+	var primary *action
+	for i := range actions {
+		if actions[i].Count > 0 {
+			primary = &actions[i]
+			break
+		}
+	}
+
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
 		"sent": sent, "replies": replies, "reply_rate": replyRate,
 		"positive_replies": positive, "bounces": bounces,
 		"approx_opens": opens, "unsubscribes": unsubs,
-		"range": rangeKey,
-		"note":  "Approx. opens may be affected by image proxies and privacy protections.",
+		"range":                  rangeKey,
+		"leads_awaiting_review":  pendingReview,
+		"drafts":                 drafts,
+		"replies_need_attention": needsReply,
+		"handoffs_failed":        failedHandoff,
+		"actions":                actions,
+		"primary_action":         primary,
+		"note":                   "Approx. opens may be affected by image proxies and privacy protections.",
 	}})
 }
 
