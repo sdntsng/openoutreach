@@ -116,7 +116,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "outreach_create_campaign",
     description:
-      "Create a draft campaign. Does NOT send email. After create: add leads, preview, then ask a human to activate.",
+      "Create a draft campaign. Does NOT send email. People in leads_csv land on the shortlist for review. After create: review campaign, then a human activates with confirm.",
     inputSchema: {
       type: "object",
       properties: {
@@ -163,6 +163,11 @@ const TOOLS: ToolDef[] = [
         campaign_id: { type: "string" },
         name: { type: "string" },
         sequence_yaml: { type: "string" },
+        accounts: {
+          type: "array",
+          items: { type: "string" },
+          description: "Sending account emails",
+        },
         account_ids: { type: "array", items: { type: "string" } },
         open_tracking_enabled: { type: "boolean" },
       },
@@ -170,10 +175,12 @@ const TOOLS: ToolDef[] = [
       additionalProperties: false,
     },
     call: (a) => {
-      const { campaign_id, ...body } = a;
+      const body: Record<string, unknown> = { ...a };
+      delete body.campaign_id;
+      delete body.account_ids;
       return {
         method: "PATCH",
-        path: `/api/v1/campaigns/${enc(campaign_id)}`,
+        path: `/api/v1/campaigns/${enc(a.campaign_id)}`,
         body,
       };
     },
@@ -181,7 +188,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "outreach_preview_campaign",
     description:
-      "Preview schedule and rendered sample messages for a campaign. Does not send.",
+      "Review rendered emails, recipients, sending account, window, and readiness. Does not send.",
     inputSchema: {
       type: "object",
       properties: {
@@ -192,7 +199,7 @@ const TOOLS: ToolDef[] = [
     },
     call: (a) => ({
       method: "GET",
-      path: `/api/v1/campaigns/${enc(a.campaign_id)}/preview`,
+      path: `/api/v1/campaigns/${enc(a.campaign_id)}/review`,
     }),
   },
   {
@@ -247,7 +254,8 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: "outreach_add_leads",
-    description: "Add leads (CSV text or rows) to a campaign. Does not activate sending.",
+    description:
+      "Enroll CSV leads into a campaign (schedules mail on draft). Prefer outreach_add_shortlist + approve + enroll. Does not activate sending.",
     inputSchema: {
       type: "object",
       properties: {
@@ -366,16 +374,19 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: "outreach_get_thread",
-    description: "Get one email thread with messages.",
+    description: "Get one email thread with messages and conversation ownership/handoff state.",
     inputSchema: {
       type: "object",
-      properties: { thread_id: { type: "string" } },
-      required: ["thread_id"],
+      properties: {
+        campaign_id: { type: "string" },
+        lead_id: { type: "string" },
+      },
+      required: ["campaign_id", "lead_id"],
       additionalProperties: false,
     },
     call: (a) => ({
       method: "GET",
-      path: `/api/v1/threads/${enc(a.thread_id)}`,
+      path: `/api/v1/threads/${enc(a.campaign_id)}/${enc(a.lead_id)}`,
     }),
   },
   {
@@ -581,7 +592,7 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: "outreach_import_leads",
-    description: "Import CSV leads into a draft campaign. Does not activate.",
+    description: "Add CSV people to the campaign shortlist for review. Does not enroll or activate.",
     inputSchema: {
       type: "object",
       properties: {
@@ -595,8 +606,8 @@ const TOOLS: ToolDef[] = [
     },
     call: (a) => ({
       method: "POST",
-      path: `/api/v1/campaigns/${enc(a.campaign_id)}/leads`,
-      body: { csv: a.csv, dry_run: a.dry_run === true, confirm: a.confirm === true },
+      path: "/api/v1/shortlist",
+      body: { campaign_id: Number(a.campaign_id), csv: a.csv, source: "csv" },
     }),
   },
   {
@@ -645,6 +656,191 @@ const TOOLS: ToolDef[] = [
     call: (a) => ({
       method: "GET",
       path: `/api/v1/threads/${enc(a.campaign_id)}/${enc(a.lead_id)}/suggest-reply`,
+    }),
+  },
+  {
+    name: "outreach_get_playbook",
+    description: "Get workspace playbook (audience, offer, schedule). Does not send.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    call: () => ({ method: "GET", path: "/api/v1/workspace/playbook" }),
+  },
+  {
+    name: "outreach_put_playbook",
+    description: "Update workspace playbook facts used for fit criteria and draft assistance. Does not send.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        company: { type: "string" },
+        audience: { type: "string" },
+        offer: { type: "string" },
+        geography: { type: "string" },
+        company_size: { type: "string" },
+        default_sequence_yaml: { type: "string" },
+      },
+      additionalProperties: true,
+    },
+    call: (a) => ({ method: "PUT", path: "/api/v1/workspace/playbook", body: a }),
+  },
+  {
+    name: "outreach_list_shortlist",
+    description: "List shortlist candidates for a campaign. Review before enrollment.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string" },
+        status: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    call: (a) => {
+      const params = new URLSearchParams();
+      if (a.campaign_id) params.set("campaign_id", String(a.campaign_id));
+      if (a.status) params.set("status", String(a.status));
+      const q = params.toString() ? `?${params}` : "";
+      return { method: "GET", path: `/api/v1/shortlist${q}` };
+    },
+  },
+  {
+    name: "outreach_add_shortlist",
+    description: "Add people to a campaign shortlist. Does not enroll or activate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "number" },
+        csv: { type: "string" },
+        email: { type: "string" },
+        first_name: { type: "string" },
+        last_name: { type: "string" },
+        company: { type: "string" },
+        title: { type: "string" },
+        fit_reason: { type: "string" },
+        source: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/shortlist", body: a }),
+  },
+  {
+    name: "outreach_patch_shortlist",
+    description: "Approve or exclude a shortlist row, or update why they fit. Does not enroll.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        status: { type: "string", description: "pending, approved, or excluded" },
+        fit_reason: { type: "string" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "PATCH",
+      path: `/api/v1/shortlist/${enc(a.id)}`,
+      body: { status: a.status, fit_reason: a.fit_reason },
+    }),
+  },
+  {
+    name: "outreach_enroll_shortlist",
+    description: "Enroll approved shortlist people into a draft campaign (schedules mail). Does not activate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string" },
+        all_approved: { type: "boolean" },
+        ids: { type: "array", items: { type: "number" } },
+      },
+      required: ["campaign_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/campaigns/${enc(a.campaign_id)}/enroll`,
+      body: { all_approved: a.all_approved === true, ids: a.ids },
+    }),
+  },
+  {
+    name: "outreach_review_campaign",
+    description: "Campaign review: rendered emails, recipients, exclusions, account, window, readiness checklist. Does not send.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string" },
+        lead: { type: "string" },
+      },
+      required: ["campaign_id"],
+      additionalProperties: false,
+    },
+    call: (a) => {
+      const q = a.lead ? `?lead=${encodeURIComponent(String(a.lead))}` : "";
+      return { method: "GET", path: `/api/v1/campaigns/${enc(a.campaign_id)}/review${q}` };
+    },
+  },
+  {
+    name: "outreach_preview_sequence",
+    description: "Render sequence YAML with sample or supplied fields. Does not send.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sequence_yaml: { type: "string" },
+        campaign_id: { type: "number" },
+        lead_email: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    call: (a) => ({ method: "POST", path: "/api/v1/sequences/preview", body: a }),
+  },
+  {
+    name: "outreach_handoff_thread",
+    description: "Route an interested conversation with context. Requires confirm=true. Does not send another outreach email.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string" },
+        lead_id: { type: "string" },
+        owner_email: { type: "string" },
+        confirm: { type: "boolean" },
+      },
+      required: ["campaign_id", "lead_id", "confirm"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/threads/${enc(a.campaign_id)}/${enc(a.lead_id)}/handoff`,
+      body: { owner_email: a.owner_email, confirm: a.confirm === true },
+    }),
+  },
+  {
+    name: "outreach_retry_handoff",
+    description: "Retry a failed handoff delivery. Does not repeat outreach.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "POST",
+      path: `/api/v1/handoffs/${enc(a.id)}/retry`,
+    }),
+  },
+  {
+    name: "outreach_patch_thread",
+    description: "Set conversation owner or needs-action without sending.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string" },
+        lead_id: { type: "string" },
+        owner_email: { type: "string" },
+        needs_action: { type: "boolean" },
+      },
+      required: ["campaign_id", "lead_id"],
+      additionalProperties: false,
+    },
+    call: (a) => ({
+      method: "PATCH",
+      path: `/api/v1/threads/${enc(a.campaign_id)}/${enc(a.lead_id)}`,
+      body: { owner_email: a.owner_email, needs_action: a.needs_action },
     }),
   },
   {
@@ -839,6 +1035,20 @@ async function toolsCall(
             error: "activation_not_confirmed",
             message:
               "Set confirm=true only after explicit human approval. Creating a campaign does not send mail.",
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+  if (name === "outreach_handoff_thread" && args.confirm !== true) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            error: "confirm_required",
+            message: "Set confirm=true to route this conversation. Retry never repeats outreach.",
           }),
         },
       ],

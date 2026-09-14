@@ -172,6 +172,9 @@ func openStore(cfg storeOpenConfig) (*Store, error) {
 		if cfg.sqlitePath == "" {
 			cfg.sqlitePath = DBPath()
 		}
+		if err := os.MkdirAll(filepath.Dir(cfg.sqlitePath), 0o700); err != nil {
+			return nil, fmt.Errorf("creating sqlite data dir: %w", err)
+		}
 
 		db, err := cfg.openDB("sqlite", sqliteDSN(cfg.sqlitePath))
 		if err != nil {

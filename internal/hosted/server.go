@@ -204,7 +204,16 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("POST /api/v1/integrations/cf-email/inbound", s.requireInternal(s.handleCFEmailInbound))
 
 	s.Mux.HandleFunc("POST /api/v1/agent/draft-sequence", s.handleDraftSequence)
+	s.Mux.HandleFunc("POST /api/v1/sequences/preview", s.handleSequencePreview)
 	s.Mux.HandleFunc("GET /api/v1/campaigns/{id}/preflight", s.handlePreflightCampaign)
+	s.Mux.HandleFunc("GET /api/v1/campaigns/{id}/review", s.handleCampaignReview)
+	s.Mux.HandleFunc("POST /api/v1/campaigns/{id}/enroll", s.handleEnrollShortlist)
+
+	s.Mux.HandleFunc("GET /api/v1/shortlist", s.handleListShortlist)
+	s.Mux.HandleFunc("POST /api/v1/shortlist", s.handleAddShortlist)
+	s.Mux.HandleFunc("PATCH /api/v1/shortlist/{id}", s.handlePatchShortlist)
+	s.Mux.HandleFunc("GET /api/v1/handoffs", s.handleListHandoffs)
+	s.Mux.HandleFunc("POST /api/v1/handoffs/{id}/retry", s.handleRetryHandoff)
 
 	s.Mux.HandleFunc("GET /api/v1/campaigns", s.handleListCampaigns)
 	s.Mux.HandleFunc("POST /api/v1/campaigns", s.handleCreateCampaign)
@@ -225,6 +234,8 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("POST /api/v1/threads/{campaignId}/{leadId}/reply", s.handleThreadReply)
 	s.Mux.HandleFunc("POST /api/v1/threads/{campaignId}/{leadId}/classify", s.handleClassify)
 	s.Mux.HandleFunc("GET /api/v1/threads/{campaignId}/{leadId}/suggest-reply", s.handleSuggestReply)
+	s.Mux.HandleFunc("POST /api/v1/threads/{campaignId}/{leadId}/handoff", s.handleThreadHandoff)
+	s.Mux.HandleFunc("PATCH /api/v1/threads/{campaignId}/{leadId}", s.handleThreadState)
 
 	s.Mux.HandleFunc("POST /api/v1/leads/validate", s.handleValidateLeads)
 	s.Mux.HandleFunc("POST /api/v1/leads/verify", s.handleVerifyLeads)

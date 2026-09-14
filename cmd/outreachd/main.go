@@ -61,7 +61,7 @@ func boot() (http.Handler, error) {
 	}
 	d1 := strings.TrimSpace(os.Getenv("OPENOUTREACH_D1_PROXY")) != ""
 	if os.Getenv("COLD_CLI_DATABASE_URL") == "" && !d1 {
-		return nil, errString("COLD_CLI_DATABASE_URL (or DATABASE_URL) is required for outreachd, or set OPENOUTREACH_D1_PROXY for Cloudflare D1")
+		slog.Info("outreachd using sqlite (set COLD_CLI_DATABASE_URL for Postgres)")
 	}
 
 	store, err := engine.OpenStore()

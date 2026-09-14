@@ -2,11 +2,8 @@ package hosted
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -391,19 +388,33 @@ func (s *Server) handlePatchCampaign(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := io.ReadAll(r.Body)
 	var req struct {
-		SequenceYAML    *string `json:"sequence_yaml"`
-		SendWindowStart *string `json:"send_window_start"`
-		SendWindowEnd   *string `json:"send_window_end"`
-		SendDays        *string `json:"send_days"`
-		Timezone        *string `json:"timezone"`
-		MinGapSeconds   *int    `json:"min_gap_seconds"`
-		MaxGapSeconds   *int    `json:"max_gap_seconds"`
-		OpenTracking    *bool   `json:"open_tracking"`
-		OpenTrackingEn  *bool   `json:"open_tracking_enabled"`
+		SequenceYAML    *string            `json:"sequence_yaml"`
+		FromName        string             `json:"from_name"`
+		Steps           []SequenceStepView `json:"steps"`
+		Accounts        *[]string          `json:"accounts"`
+		SendWindowStart *string            `json:"send_window_start"`
+		SendWindowEnd   *string            `json:"send_window_end"`
+		SendDays        *string            `json:"send_days"`
+		Timezone        *string            `json:"timezone"`
+		MinGapSeconds   *int               `json:"min_gap_seconds"`
+		MaxGapSeconds   *int               `json:"max_gap_seconds"`
+		OpenTracking    *bool              `json:"open_tracking"`
+		OpenTrackingEn  *bool              `json:"open_tracking_enabled"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
+	}
+	if req.SequenceYAML == nil && len(req.Steps) > 0 {
+		y := SequenceToYAML(sequenceFromView(SequenceView{FromName: req.FromName, Steps: req.Steps}))
+		req.SequenceYAML = &y
+	}
+	ws := s.workspaceFromRequest(r)
+	if req.Accounts != nil {
+		if err := s.assignCampaignAccounts(ws, id, *req.Accounts); err != nil {
+			writeErr(w, http.StatusBadRequest, "accounts_failed", err.Error())
+			return
+		}
 	}
 	opts := engine.UpdateCampaignOpts{
 		SendWindowStart: req.SendWindowStart,
@@ -414,6 +425,10 @@ func (s *Server) handlePatchCampaign(w http.ResponseWriter, r *http.Request) {
 		MaxGapSeconds:   req.MaxGapSeconds,
 	}
 	if req.SequenceYAML != nil {
+		if _, _, err := parseSequenceYAML(*req.SequenceYAML); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid_sequence", err.Error())
+			return
+		}
 		f, err := os.CreateTemp("", "openoutreach-seq-*.yml")
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "temp_failed", err.Error())
@@ -776,106 +791,4 @@ func searchLeads(db *sql.DB, q, domain, status string, limit int) ([]internal.Le
 		leads = append(leads, l)
 	}
 	return leads, rows.Err()
-}
-
-func (s *Server) dispatchOutboundEvents(workspaceID string) {
-	caps := BuildCapabilities(s.WorkspaceID, s.PublicBaseURL, s.encKey() != nil, s.OAuth != nil)
-	if !caps.Integrations["outbound"] && !caps.Integrations["webhook"] {
-		return
-	}
-	key := s.encKey()
-	if key == nil {
-		return
-	}
-	var enc, metadata string
-	err := queryRow(s.Store.DB, `
-		SELECT encrypted_secret, COALESCE(metadata, '')
-		FROM integration_credentials
-		WHERE workspace_id = ? AND provider = 'outbound' AND status = 'active'
-		ORDER BY id DESC LIMIT 1`, workspaceID).Scan(&enc, &metadata)
-	if err != nil {
-		return
-	}
-	plain, err := Decrypt(key, enc)
-	if err != nil || len(plain) == 0 {
-		return
-	}
-	hookURL := strings.TrimSpace(string(plain))
-	if !strings.HasPrefix(hookURL, "http://") && !strings.HasPrefix(hookURL, "https://") {
-		if u := jsonStringField(metadata, "url"); u != "" {
-			hookURL = u
-		}
-	}
-	if !strings.HasPrefix(hookURL, "http://") && !strings.HasPrefix(hookURL, "https://") {
-		return
-	}
-	hmacSecret := jsonStringField(metadata, "hmac_secret")
-
-	cursorKey := "outbound_events_cursor:" + workspaceID
-	cursor, _ := GetHostedKV(s.Store.DB, cursorKey)
-	lastID, _ := strconv.ParseInt(strings.TrimSpace(cursor), 10, 64)
-
-	rows, err := query(s.Store.DB, `
-		SELECT e.id, e.type, e.campaign_id, e.lead_id, e.timestamp, COALESCE(l.email, '')
-		FROM events e
-		JOIN campaigns c ON c.id = e.campaign_id
-		LEFT JOIN leads l ON l.id = e.lead_id
-		WHERE c.workspace_id = ? AND e.id > ? AND e.type IN ('sent', 'reply', 'bounce')
-		ORDER BY e.id ASC
-		LIMIT 50`, workspaceID, lastID)
-	if err != nil {
-		return
-	}
-	type ev struct {
-		ID         int64
-		Type       string
-		CampaignID int64
-		LeadID     int64
-		Timestamp  time.Time
-		Email      string
-	}
-	var events []ev
-	for rows.Next() {
-		var e ev
-		if err := rows.Scan(&e.ID, &e.Type, &e.CampaignID, &e.LeadID, &e.Timestamp, &e.Email); err != nil {
-			rows.Close()
-			return
-		}
-		events = append(events, e)
-	}
-	rows.Close()
-
-	var maxID int64 = lastID
-	for _, e := range events {
-		payload, _ := json.Marshal(map[string]any{
-			"type":        e.Type,
-			"campaign_id": e.CampaignID,
-			"lead_id":     e.LeadID,
-			"email":       e.Email,
-			"timestamp":   e.Timestamp.UTC().Format(time.RFC3339),
-		})
-		req, err := http.NewRequest(http.MethodPost, hookURL, bytes.NewReader(payload))
-		if err != nil {
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", "OpenOutreach-outbound")
-		if hmacSecret != "" {
-			mac := hmac.New(sha256.New, []byte(hmacSecret))
-			mac.Write(payload)
-			req.Header.Set("X-OpenOutreach-Signature", hex.EncodeToString(mac.Sum(nil)))
-		}
-		resp, err := outboundHTTPClient.Do(req)
-		if err != nil {
-			continue
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		if e.ID > maxID {
-			maxID = e.ID
-		}
-	}
-	if maxID > lastID {
-		_ = SetHostedKV(s.Store.DB, cursorKey, strconv.FormatInt(maxID, 10))
-	}
 }

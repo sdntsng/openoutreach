@@ -21,7 +21,7 @@ export function CampaignTable({ campaigns, empty }: { campaigns: Campaign[]; emp
         {campaigns.length === 0 ? (
           <tr>
             <td colSpan={7} className="muted">
-              {empty || "No campaigns yet. Create a draft first — activate is a separate, explicit step."}
+              {empty || "No campaigns yet. Prepare a draft first — activate is a separate, explicit step."}
             </td>
           </tr>
         ) : (
@@ -32,6 +32,15 @@ export function CampaignTable({ campaigns, empty }: { campaigns: Campaign[]; emp
               </td>
               <td>
                 <StatusChip status={c.status} />
+                {c.status === "active" && c.next_send ? (
+                  <div className="muted" style={{ fontSize: "0.8rem" }}>
+                    Next send {new Date(c.next_send).toLocaleString()}
+                  </div>
+                ) : c.status === "draft" ? (
+                  <div className="muted" style={{ fontSize: "0.8rem" }}>
+                    Nothing sends until you activate
+                  </div>
+                ) : null}
               </td>
               <td>{c.sent ?? 0}</td>
               <td>{c.sent ? replyRateLabel(c.reply_rate) : "—"}</td>

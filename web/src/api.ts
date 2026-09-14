@@ -50,6 +50,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type Period = "today" | "7d" | "30d" | "all";
 
+export interface OverviewAction {
+  key: string;
+  label: string;
+  count: number;
+  to: string;
+  detail: string;
+}
+
 export interface OverviewStats {
   sent: number;
   replies: number;
@@ -59,6 +67,12 @@ export interface OverviewStats {
   approx_opens: number;
   range?: string;
   note?: string;
+  leads_awaiting_review?: number;
+  drafts?: number;
+  replies_need_attention?: number;
+  handoffs_failed?: number;
+  actions?: OverviewAction[];
+  primary_action?: OverviewAction | null;
 }
 
 export interface SetupStatus {
@@ -165,6 +179,9 @@ export interface InboxThread {
   needs_reply?: boolean;
   type?: string;
   timestamp?: string;
+  owner_email?: string;
+  handoff_status?: string;
+  needs_action?: boolean;
 }
 
 export interface InboxCounts {
@@ -204,6 +221,107 @@ export interface ThreadMessage {
   occurred_at?: string;
 }
 
+export interface ConversationState {
+  owner_email?: string;
+  needs_action?: boolean;
+  handoff_status?: string;
+  last_delivery_id?: number;
+}
+
+export interface SequenceStepView {
+  step: number;
+  delay: number;
+  subject: string;
+  body: string;
+}
+
+export interface SequenceView {
+  name?: string;
+  from_name?: string;
+  steps?: SequenceStepView[];
+  yaml?: string;
+}
+
+export interface RenderedStep {
+  step: number;
+  delay: number;
+  subject: string;
+  body: string;
+  send_at?: string;
+  send_note?: string;
+}
+
+export interface ChecklistItem {
+  id: string;
+  ok: boolean;
+  label: string;
+  fix?: string;
+  count?: number;
+}
+
+export interface RecipientPreview {
+  email: string;
+  first_name?: string;
+  company?: string;
+  title?: string;
+  source?: string;
+}
+
+export interface CampaignReview {
+  campaign_id: number;
+  name: string;
+  status: string;
+  sequence?: SequenceView;
+  rendered?: RenderedStep[];
+  preview_lead?: RecipientPreview;
+  recipients?: RecipientPreview[];
+  preview_options?: RecipientPreview[];
+  exclusions?: string[];
+  accounts?: string[];
+  send_window?: string;
+  timezone?: string;
+  send_days?: string;
+  next_send?: string;
+  next_send_note?: string;
+  enrolled?: number;
+  pending_review?: number;
+  checklist?: ChecklistItem[];
+  ready?: boolean;
+  warnings?: string[];
+  next_actions?: string[];
+}
+
+export interface ShortlistRow {
+  id: number;
+  campaign_id: number;
+  email: string;
+  first_name: string;
+  last_name: string;
+  company: string;
+  title: string;
+  domain?: string;
+  source: string;
+  source_at: string;
+  fit_reason: string;
+  email_check: string;
+  email_check_reason?: string;
+  previous_outreach: string;
+  status: string;
+}
+
+export interface OutboundDelivery {
+  id: number;
+  kind: string;
+  campaign_id: number;
+  lead_id: number;
+  email?: string;
+  status: string;
+  http_status?: number;
+  error_message?: string;
+  attempts?: number;
+  last_attempt_at?: string;
+}
+
 export const api = {
   overview: (period: Period) => {
     const range = period === "all" ? "" : period;
@@ -227,7 +345,60 @@ export const api = {
     request<CampaignStats>(`/campaigns/${id}/stats`),
 
   getCampaignPreview: (id: string | number) =>
-    request<unknown>(`/campaigns/${id}/preview?render=1`),
+    request<CampaignReview>(`/campaigns/${id}/preview?render=1`),
+
+  campaignReview: (id: string | number, lead?: string) => {
+    const qs = lead ? `?lead=${encodeURIComponent(lead)}` : "";
+    return request<CampaignReview>(`/campaigns/${id}/review${qs}`);
+  },
+
+  previewSequence: (body: { sequence_yaml?: string; from_name?: string; steps?: SequenceStepView[]; fields?: Record<string, string> }) =>
+    request<{ sequence?: SequenceView; rendered?: RenderedStep[]; preview_lead?: RecipientPreview }>(
+      "/sequences/preview",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  listShortlist: (campaignId?: string | number) => {
+    const qs = campaignId ? `?campaign_id=${encodeURIComponent(String(campaignId))}` : "";
+    return request<{ candidates: ShortlistRow[]; counts?: Record<string, number>; playbook?: WorkspacePlaybook }>(
+      `/shortlist${qs}`,
+    );
+  },
+
+  addShortlist: (body: { campaign_id?: number; csv?: string; email?: string; fit_reason?: string; source?: string; first_name?: string; last_name?: string; company?: string; title?: string }) =>
+    request<{ added: number; campaign_id?: number }>("/shortlist", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  patchShortlist: (id: string | number, body: { status?: string; fit_reason?: string }) =>
+    request<unknown>(`/shortlist/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+
+  enrollShortlist: (campaignId: string | number, body: { ids?: number[]; all_approved?: boolean }) =>
+    request<{ enrolled?: unknown; count?: number }>(`/campaigns/${campaignId}/enroll`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  handoffThread: (campaignId: string | number, leadId: string | number, body: { owner_email?: string; confirm: boolean }) =>
+    request<{ handoff?: OutboundDelivery; delivery_id?: number }>(
+      `/threads/${campaignId}/${leadId}/handoff`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  retryHandoff: (id: string | number) =>
+    request<OutboundDelivery>(`/handoffs/${id}/retry`, { method: "POST", body: "{}" }),
+
+  listHandoffs: (status?: string) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return request<{ handoffs: OutboundDelivery[] }>(`/handoffs${qs}`);
+  },
+
+  patchThread: (campaignId: string | number, leadId: string | number, body: { owner_email?: string; needs_action?: boolean }) =>
+    request<unknown>(`/threads/${campaignId}/${leadId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
 
   setup: () => request<SetupStatus>("/setup"),
 
@@ -276,6 +447,9 @@ export const api = {
     id: string | number,
     body: {
       sequence_yaml?: string;
+      from_name?: string;
+      steps?: SequenceStepView[];
+      accounts?: string[];
       send_window_start?: string;
       send_window_end?: string;
       send_days?: string;
@@ -362,7 +536,7 @@ export const api = {
   },
 
   getThread: (campaignId: string | number, leadId: string | number) =>
-    request<{ messages: ThreadMessage[] }>(`/threads/${campaignId}/${leadId}`),
+    request<{ messages: ThreadMessage[]; conversation?: ConversationState }>(`/threads/${campaignId}/${leadId}`),
 
   replyToThread: (
     campaignId: string | number,
@@ -377,19 +551,29 @@ export const api = {
     }),
 
   suggestReply: (campaignId: string | number, leadId: string | number) =>
-    request<{ suggested_body?: string; classification?: string; send_allowed?: boolean }>(
-      `/threads/${campaignId}/${leadId}/suggest-reply`,
-    ),
+    request<{
+      suggested_body?: string;
+      classification?: string;
+      send_allowed?: boolean;
+      used_playbook?: boolean;
+      source?: string;
+    }>(`/threads/${campaignId}/${leadId}/suggest-reply`),
 
   classifyThread: (
     campaignId: string | number,
     leadId: string | number,
     classification: string,
   ) =>
-    request<{ status?: string; classification?: string }>(
-      `/threads/${campaignId}/${leadId}/classify`,
-      { method: "POST", body: JSON.stringify({ classification }) },
-    ),
+    request<{
+      status?: string;
+      classification?: string;
+      handoff?: OutboundDelivery;
+      delivery_id?: number;
+      conversation?: { owner_email?: string; needs_action?: boolean; handoff_status?: string; last_delivery_id?: number };
+    }>(`/threads/${campaignId}/${leadId}/classify`, {
+      method: "POST",
+      body: JSON.stringify({ classification }),
+    }),
 
   draftSequence: (body: { icp?: string; offer?: string; tone?: string; step_count?: number; from_name?: string; campaign_id?: number }) =>
     request<{ sequence_yaml?: string; preview?: unknown; step_count?: number }>("/agent/draft-sequence", {

@@ -31,7 +31,7 @@ Legend: **Y** = we have it in dashboard or API/MCP · **P** = partial · **N** =
 | CSV / Sheets import | Y | Y | Y | Y | Y | Y | Y | Y | **Y** |
 | CSV export | Y | Y | Y | Y | Y | Y | Y | Y | **Y** |
 | Outbound webhooks (reply → Slack/CRM) | Y | Y | Y | Y | Y | Y | Y | Y | **Y** — URL in Settings vault |
-| Visual sequence builder | Y | Y | Y | Y | Y | Y | Y | Y | **P** — YAML + draft-from-brief |
+| Visual sequence builder | Y | Y | Y | Y | Y | Y | Y | Y | **Y** — ordered email steps over the same YAML |
 | LinkedIn steps | N / limited | N | **Y** | Y | N | Y | N | Y | **N** — webhook ingest only (ToS) |
 | Agency workspaces / white-label | folders | **Y** | seats | seats | seats | seats | seats | enterprise | **P** — one `workspace_id` per deploy |
 | API + agent/MCP | REST | deep REST | REST | REST | REST | REST | REST | REST | **Y** — REST + MCP, create ≠ send |
@@ -77,7 +77,7 @@ Configured from the dashboard or vault. No new required env vars. `FEATURE_*` fo
 | Provider flags | Hide CF Email until wrangler secret | Defaults on; vault is the real switch | Web forms |
 | Preflight / windows / tracking | Hidden API | Create wizard + detail | Checkboxes |
 
-Still **not** built (and why): inbox placement SaaS, paid SuperSearch clone, LinkedIn steps, warmup sending, white-label agency SaaS, visual drag-and-drop sequencer (YAML + draft-sequence is enough for OSS), AutoGTM-style billing/autopilot (see [design/AUTOGTM-PARITY.md](design/AUTOGTM-PARITY.md)).
+Still **not** built (and why): inbox placement SaaS, paid SuperSearch clone, LinkedIn steps (rejected, not “Soon”), warmup sending inside Tick, white-label agency SaaS, AutoGTM-style billing/autopilot (see [design/AUTOGTM-PARITY.md](design/AUTOGTM-PARITY.md)). The visual sequence editor is the same YAML the engine already parses — it is not a second scheduler.
 
 Dashboard IA now matches that competitor’s setup/mailbox/campaigns grouping: dedicated suppress list, inbox boxes, workspace playbook (project / templates / schedule / targeting), campaign reply-rate + interested.
 

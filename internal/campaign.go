@@ -133,9 +133,6 @@ func CreateDraftCampaign(db *sql.DB, opts CreateDraftCampaignOpts) (*CreateCampa
 	if err != nil {
 		return nil, err
 	}
-	if len(accountIDs) == 0 {
-		return nil, fmt.Errorf("at least one active account is required")
-	}
 
 	type draftResult struct {
 		campaignID int64

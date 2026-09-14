@@ -112,76 +112,20 @@ func (s *Server) secretResolver() internal.SecretResolver {
 }
 
 func (s *Server) handlePreflightCampaign(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	rev, err := s.buildCampaignReview(r, "")
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_id", "invalid campaign id")
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
-	db := s.Store.DB
-	var name, status, seqContent string
-	var leadCount, pending, accounts int
-	err = queryRow(db, `SELECT name, status, sequence_content FROM campaigns WHERE id = ?`, id).Scan(&name, &status, &seqContent)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "campaign not found")
-		return
-	}
-	_ = queryRow(db, `SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ?`, id).Scan(&leadCount)
-	_ = queryRow(db, `SELECT COUNT(*) FROM scheduled_sends WHERE campaign_id = ? AND status = 'pending'`, id).Scan(&pending)
-	_ = queryRow(db, `SELECT COUNT(*) FROM campaign_accounts ca JOIN accounts a ON a.id = ca.account_id WHERE ca.campaign_id = ? AND a.status = 'active'`, id).Scan(&accounts)
-
-	var warnings []string
-	ready := true
-	if status != "draft" && status != "paused" {
-		warnings = append(warnings, "campaign status is "+status)
-	}
-	if strings.TrimSpace(seqContent) == "" {
-		warnings = append(warnings, "sequence_content is empty")
-		ready = false
-	}
-	if leadCount == 0 {
-		warnings = append(warnings, "no leads on campaign")
-		ready = false
-	}
-	if accounts == 0 {
-		warnings = append(warnings, "no active sending accounts assigned")
-		ready = false
-	}
-	// lightweight lead quality
-	rows, qerr := query(db, `
-		SELECT l.email FROM leads l
-		JOIN campaign_leads cl ON cl.lead_id = l.id
-		WHERE cl.campaign_id = ? LIMIT 500`, id)
-	invalid := 0
-	if qerr == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var email string
-			_ = rows.Scan(&email)
-			email = strings.ToLower(strings.TrimSpace(email))
-			if !strings.Contains(email, "@") || strings.HasPrefix(email, "info@") || strings.HasPrefix(email, "support@") {
-				invalid++
-			}
-		}
-	}
-	if invalid > 0 {
-		warnings = append(warnings, fmt.Sprintf("%d leads look invalid or role-based", invalid))
-	}
-	if seq, err := internal.ParseSequenceFromBytes([]byte(seqContent)); err != nil && strings.TrimSpace(seqContent) != "" {
-		warnings = append(warnings, "sequence YAML: "+err.Error())
-		ready = false
-	} else if seq != nil {
-		for _, p := range seq.CollectPlaceholders() {
-			if p == "first_name" || p == "email" || p == "company" || p == "last_name" || p == "domain" {
-				continue
-			}
-			warnings = append(warnings, "sequence uses custom placeholder {{"+p+"}} — confirm lead CSV has that column")
-		}
-	}
+	var pending int
+	_ = queryRow(s.Store.DB, `SELECT COUNT(*) FROM scheduled_sends WHERE campaign_id = ? AND status = 'pending'`, rev.CampaignID).Scan(&pending)
 	writeJSON(w, http.StatusOK, envelope{Data: map[string]any{
-		"campaign_id": id, "name": name, "status": status,
-		"ready": ready, "lead_count": leadCount, "pending_sends": pending,
-		"active_accounts": accounts, "warnings": warnings,
-	}, Warnings: warnings})
+		"campaign_id": rev.CampaignID, "name": rev.Name, "status": rev.Status,
+		"ready": rev.Ready, "lead_count": rev.Enrolled, "pending_sends": pending,
+		"active_accounts": len(rev.Accounts), "checklist": rev.Checklist,
+		"next_send": rev.NextSend, "next_send_note": rev.NextSendNote,
+		"warnings": rev.Warnings,
+	}, Warnings: rev.Warnings})
 }
 
 func (s *Server) handleDraftSequence(w http.ResponseWriter, r *http.Request) {
@@ -209,11 +153,26 @@ func (s *Server) handleDraftSequence(w http.ResponseWriter, r *http.Request) {
 	}
 	icp := strings.TrimSpace(req.ICP)
 	offer := strings.TrimSpace(req.Offer)
+	ws := s.workspaceFromRequest(r)
+	pb := s.loadPlaybook(ws)
+	usedPlaybook := false
+	if icp == "" {
+		if a := strings.TrimSpace(pb.Audience); a != "" {
+			icp = a
+			usedPlaybook = true
+		}
+	}
+	if offer == "" {
+		if o := strings.TrimSpace(pb.Offer); o != "" {
+			offer = o
+			usedPlaybook = true
+		}
+	}
 	if icp == "" {
 		icp = "your ICP"
 	}
 	if offer == "" {
-		offer = "our product"
+		offer = "your offer"
 	}
 	var b strings.Builder
 	b.WriteString("name: drafted\n")
@@ -281,7 +240,8 @@ func (s *Server) handleDraftSequence(w http.ResponseWriter, r *http.Request) {
 		"valid":         true,
 		"step_count":    len(seq.Steps),
 		"preview":       preview,
-		"next_actions":  []string{"review YAML", "preview campaign", "human activate"},
+		"used_playbook": usedPlaybook,
+		"next_actions":  []string{"review the emails", "preview campaign", "human activate"},
 	}, Warnings: warnings})
 }
 
@@ -297,13 +257,29 @@ func (s *Server) handleSuggestReply(w http.ResponseWriter, r *http.Request) {
 		classification = "unknown"
 	}
 	suggestion := "Thanks for the reply — happy to share more detail."
+	source := "classification"
+	usedPlaybook := false
+	pb := s.loadPlaybook(s.workspaceFromRequest(r))
 	switch strings.ToLower(classification) {
-	case "positive", "interested":
+	case "positive", "interested", "hot":
 		suggestion = "Appreciate the interest — what does your calendar look like next week for a 15-min call?"
+		if pb.Company != "" || pb.Offer != "" {
+			usedPlaybook = true
+			source = "classification+playbook"
+			who := pb.Company
+			if who == "" {
+				who = "us"
+			}
+			what := pb.Offer
+			if what == "" {
+				what = "what we sent"
+			}
+			suggestion = fmt.Sprintf("Appreciate the interest — happy to walk through how %s helps with %s. What does your calendar look like next week?", who, what)
+		}
 	case "objection":
 		suggestion = "Totally fair — curious what would make this worth revisiting later?"
 	case "ooo", "out_of_office":
-		suggestion = "" // do not suggest send
+		suggestion = ""
 	case "unsubscribe", "not_interested":
 		suggestion = ""
 	case "bounce":
@@ -314,6 +290,8 @@ func (s *Server) handleSuggestReply(w http.ResponseWriter, r *http.Request) {
 		"classification": classification, "reason": reason,
 		"suggested_body": suggestion,
 		"send_allowed":   suggestion != "",
+		"used_playbook":  usedPlaybook,
+		"source":         source,
 		"next_actions":   []string{"human edits", "POST reply with confirm:true to send"},
 	}})
 }

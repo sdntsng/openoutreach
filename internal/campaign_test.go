@@ -306,6 +306,28 @@ func TestCreateDraftCampaign(t *testing.T) {
 	}
 }
 
+func TestCreateDraftCampaignWithoutAccounts(t *testing.T) {
+	db := testDB(t)
+	result, err := CreateDraftCampaign(db, CreateDraftCampaignOpts{
+		Name:            "no-mailbox-yet",
+		SendWindowStart: "09:00",
+		SendWindowEnd:   "17:00",
+		SendDays:        "1,2,3,4,5",
+		Timezone:        "UTC",
+	})
+	if err != nil {
+		t.Fatalf("CreateDraftCampaign without accounts: %v", err)
+	}
+	if result.Accounts != 0 {
+		t.Errorf("expected 0 accounts, got %d", result.Accounts)
+	}
+	var links int
+	db.QueryRow("SELECT COUNT(*) FROM campaign_accounts WHERE campaign_id = ?", result.ID).Scan(&links)
+	if links != 0 {
+		t.Errorf("expected 0 linked accounts, got %d", links)
+	}
+}
+
 func TestCreateDraftCampaignRejectsInactiveAccount(t *testing.T) {
 	db := testDB(t)
 	db.Exec("INSERT INTO accounts (email, status) VALUES ('sender@x.com', 'paused')")

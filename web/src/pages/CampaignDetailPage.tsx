@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, type CampaignStats } from "../api";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { ApiError, api, asArray, type Account, type CampaignReview, type CampaignStats } from "../api";
 import { LeadImport } from "../LeadImport";
+import { SequenceEditor } from "../SequenceEditor";
+import { defaultSequence, parseSequenceYAML, sequenceToYAML, type SequenceDoc } from "../sequence";
 import { StatusChip } from "../ui";
 import { GATES, useWorkspace } from "../workspace";
 
-type Tab = "campaign" | "leads";
+type Tab = "review" | "recipients" | "yaml";
 
 const OPEN_TOOLTIP =
   "Approx. opens are inferred from tracking pixel loads. Image proxies and privacy features can skew this metric.";
@@ -28,20 +30,46 @@ function downloadCSV(filename: string, csv: string) {
 export default function CampaignDetailPage() {
   const ws = useWorkspace();
   const { id = "" } = useParams();
+  const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
-  const [tab, setTab] = useState<Tab>("campaign");
-  const [campaign, setCampaign] = useState<Record<string, unknown> | null>(null);
+  const tab = (params.get("tab") as Tab) || "review";
+  const [review, setReview] = useState<CampaignReview | null>(null);
   const [stats, setStats] = useState<CampaignStats | null>(null);
-  const [preview, setPreview] = useState<unknown>(null);
-  const [sequence, setSequence] = useState("");
+  const [doc, setDoc] = useState<SequenceDoc>(defaultSequence());
+  const [yaml, setYaml] = useState("");
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [selectedAccounts, setSelectedAccounts] = useState<string[]>([]);
+  const [previewLead, setPreviewLead] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  function setTab(next: Tab) {
+    const q = new URLSearchParams(params);
+    if (next === "review") q.delete("tab");
+    else q.set("tab", next);
+    setParams(q, { replace: true });
+  }
+
   async function reload() {
-    const c = await api.getCampaign(id);
-    setCampaign(c);
-    const yaml = str(c.sequence_yaml || c.sequence, "");
-    setSequence(yaml === "—" ? "" : yaml);
+    const rev = await api.campaignReview(id, previewLead || undefined);
+    setReview(rev);
+    setYaml(rev.sequence?.yaml || "");
+    if (rev.sequence?.steps?.length) {
+      setDoc({
+        name: rev.sequence.name || "outreach",
+        from_name: rev.sequence.from_name || "You",
+        steps: rev.sequence.steps.map((s) => ({
+          step: s.step,
+          delay: s.delay,
+          subject: s.subject,
+          body: s.body,
+        })),
+      });
+    } else {
+      const parsed = parseSequenceYAML(rev.sequence?.yaml || "");
+      setDoc(parsed || defaultSequence());
+    }
+    setSelectedAccounts(rev.accounts || []);
     try {
       setStats(await api.getCampaignStats(id));
     } catch {
@@ -52,8 +80,12 @@ export default function CampaignDetailPage() {
   useEffect(() => {
     setError(null);
     reload().catch((err: Error) => setError(err.message));
+    api
+      .listAccounts()
+      .then((data) => setAccounts(asArray(data, "accounts")))
+      .catch(() => setAccounts([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, previewLead]);
 
   async function run(action: () => Promise<unknown>) {
     setBusy(true);
@@ -62,23 +94,34 @@ export default function CampaignDetailPage() {
       await action();
       await reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (err instanceof ApiError) {
+        const data = err.body as { data?: CampaignReview; error?: { message?: string } };
+        if (data?.data?.checklist) setReview(data.data);
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setBusy(false);
     }
   }
 
-  const status = str(campaign?.status, "");
-  const name = str(campaign?.name, "Campaign");
-  const leadCount = Number(campaign?.leads ?? (Array.isArray(stats?.leads) ? stats?.leads.length : 0));
+  const status = review?.status || "";
+  const name = review?.name || "Campaign";
+  const leadCount = review?.enrolled ?? 0;
   const editable = status === "draft" || status === "paused";
+  const visualOK = useMemo(() => parseSequenceYAML(yaml) !== null, [yaml]);
+  const recipientLabel = review?.preview_lead?.email
+    ? `${review.preview_lead.first_name || review.preview_lead.email} at ${review.preview_lead.company || "—"} (${review.preview_lead.source || "preview"})`
+    : undefined;
 
-  if (!campaign && !error) return <p className="muted">Loading…</p>;
+  if (!review && !error) return <p className="muted">Loading…</p>;
 
   return (
     <div>
       <div className="row-actions" style={{ marginBottom: "0.5rem" }}>
         <Link to="/campaigns">← Campaigns</Link>
+        <Link to={`/shortlist?campaign=${id}`}>Shortlist</Link>
       </div>
       <div className="row-actions" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
@@ -88,28 +131,38 @@ export default function CampaignDetailPage() {
             {status === "paused"
               ? "Sending stopped. Replies are still monitored."
               : status === "draft"
-                ? "Draft — nothing sends until you activate with confirm."
+                ? "Draft — nothing sends until you review and activate."
                 : status === "active"
-                  ? "Active — tick sends due mail from scheduled_sends."
-                  : null}
+                  ? review?.next_send_note || "Due mail will send in the campaign window."
+                  : status === "completed"
+                    ? "Sequence finished. Replies still belong in Inbox."
+                    : null}
           </p>
+          {review?.next_send_note && status !== "active" ? <p className="muted">{review.next_send_note}</p> : null}
         </div>
         <div className="row-actions">
-          {status === "draft" && !ws.hasSender && (
+          {status === "draft" && !ws.canSend && (
             <Link to={GATES.sender.to}>
               <button type="button" className="secondary">
                 Connect a sending account
               </button>
             </Link>
           )}
-          {status === "draft" && ws.hasSender && (
+          {status === "draft" && (
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || !review?.ready}
               onClick={() => {
-                if (window.confirm("Activate this campaign? This will start sending scheduled emails.")) {
-                  void run(() => api.activateCampaign(id));
+                const n = review?.enrolled ?? 0;
+                const acc = (review?.accounts || []).join(", ") || "none";
+                if (
+                  !window.confirm(
+                    `Activate and start sending?\n\n${n} recipient(s)\nFrom: ${acc}\nWindow: ${review?.send_window} ${review?.timezone}`,
+                  )
+                ) {
+                  return;
                 }
+                void run(() => api.activateCampaign(id));
               }}
             >
               Activate
@@ -120,34 +173,9 @@ export default function CampaignDetailPage() {
               Pause
             </button>
           )}
-          {status === "paused" && !ws.hasSender && (
-            <Link to={GATES.sender.to}>
-              <button type="button" className="secondary">
-                Connect a sending account
-              </button>
-            </Link>
-          )}
-          {status === "paused" && ws.hasSender && (
-            <button type="button" disabled={busy} onClick={() => void run(() => api.resumeCampaign(id))}>
+          {status === "paused" && (
+            <button type="button" disabled={busy || !ws.canSend} onClick={() => void run(() => api.resumeCampaign(id))}>
               Resume
-            </button>
-          )}
-          {editable && (
-            <button
-              type="button"
-              className="secondary"
-              disabled={busy}
-              onClick={() => {
-                void run(() =>
-                  api.preflightCampaign(id).then((res) => {
-                    const warns = res.warnings?.length ? res.warnings.join(" · ") : "no warnings";
-                    window.alert(`${res.ready ? "Ready" : "Not ready"} — ${warns}`);
-                    return res;
-                  }),
-                );
-              }}
-            >
-              Preflight
             </button>
           )}
           <button
@@ -172,18 +200,47 @@ export default function CampaignDetailPage() {
       </div>
       {error && <div className="error">{error}</div>}
 
+      {review?.checklist?.length ? (
+        <div className="card checklist">
+          <h2 style={{ marginTop: 0 }}>Before you activate</h2>
+          <ul className="checklist-list">
+            {review.checklist.map((item) => (
+              <li key={item.id} className={item.ok ? "is-ok" : "is-block"}>
+                <span>{item.ok ? "Ready" : "Needs fix"}</span> {item.label}
+                {!item.ok && item.fix ? (
+                  <Link to={item.fix} style={{ marginLeft: 8 }}>
+                    Fix
+                  </Link>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          {review.warnings?.length ? (
+            <ul className="muted">
+              {review.warnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="tabs">
-        <button type="button" className={tab === "campaign" ? "active" : undefined} onClick={() => setTab("campaign")}>
-          Campaign
+        <button type="button" className={tab === "review" ? "active" : undefined} onClick={() => setTab("review")}>
+          Review
         </button>
-        <button type="button" className={tab === "leads" ? "active" : undefined} onClick={() => setTab("leads")}>
-          Leads{leadCount ? ` (${leadCount})` : ""}
+        <button type="button" className={tab === "recipients" ? "active" : undefined} onClick={() => setTab("recipients")}>
+          Recipients{leadCount ? ` (${leadCount})` : ""}
+          {review?.pending_review ? ` · ${review.pending_review} to review` : ""}
+        </button>
+        <button type="button" className={tab === "yaml" ? "active" : undefined} onClick={() => setTab("yaml")}>
+          Advanced YAML
         </button>
       </div>
 
-      {tab === "campaign" && campaign && (
+      {tab === "review" && review && (
         <div className="stack">
-          {stats && (
+          {stats && status !== "draft" ? (
             <div className="metrics">
               <div className="metric">
                 <div className="label">Sent</div>
@@ -206,54 +263,97 @@ export default function CampaignDetailPage() {
                 <div className="value">{stats.approx_opens ?? 0}</div>
               </div>
             </div>
-          )}
+          ) : null}
           <div className="card stack">
             <p className="muted">
-              Send window {str(campaign.send_window)} · {str(campaign.timezone)} · accounts {str(campaign.accounts)}
+              Window {review.send_window} {review.timezone} · {review.send_days} ·{" "}
+              {review.accounts?.length ? review.accounts.join(", ") : "no sending account yet"}
             </p>
             <label>
-              Sequence YAML
-              <textarea
-                rows={16}
-                value={sequence}
-                onChange={(e) => setSequence(e.target.value)}
+              Preview as
+              <select value={previewLead} onChange={(e) => setPreviewLead(e.target.value)}>
+                <option value="">Sample (Ada @ Acme)</option>
+                {(review.preview_options || review.recipients || []).map((r) => (
+                  <option key={r.email} value={r.email}>
+                    {r.first_name || r.email} · {r.email}
+                    {r.source ? ` (${r.source})` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <fieldset>
+              <legend>Sending accounts</legend>
+              {accounts.length === 0 ? (
+                <p className="muted">
+                  <Link to="/integrations?kind=send">Connect a mailbox</Link> to assign one.
+                </p>
+              ) : (
+                accounts.map((a) => (
+                  <label key={a.id} className="row">
+                    <input
+                      type="checkbox"
+                      disabled={!editable}
+                      checked={selectedAccounts.includes(a.email)}
+                      onChange={() =>
+                        setSelectedAccounts((prev) =>
+                          prev.includes(a.email) ? prev.filter((e) => e !== a.email) : [...prev, a.email],
+                        )
+                      }
+                    />
+                    {a.email}
+                  </label>
+                ))
+              )}
+            </fieldset>
+            {visualOK ? (
+              <SequenceEditor
+                doc={doc}
+                onChange={setDoc}
+                preview={!editable ? review.rendered : undefined}
+                fields={{
+                  first_name: review.preview_lead?.first_name || "",
+                  company: review.preview_lead?.company || "",
+                  email: review.preview_lead?.email || "",
+                }}
+                recipientLabel={recipientLabel}
                 readOnly={!editable}
               />
-            </label>
+            ) : (
+              <p className="muted">This sequence uses variants. Edit it in Advanced YAML so we do not flatten it.</p>
+            )}
             {editable ? (
               <button
                 type="button"
-                className="secondary"
-                disabled={busy || !sequence.trim()}
-                onClick={() => void run(() => api.patchCampaign(id, { sequence_yaml: sequence }))}
+                disabled={busy}
+                onClick={() =>
+                  void run(() =>
+                    api.patchCampaign(id, {
+                      sequence_yaml: visualOK ? sequenceToYAML(doc) : yaml,
+                      accounts: selectedAccounts,
+                    }),
+                  )
+                }
               >
                 Save sequence
               </button>
             ) : (
               <p className="muted">Pause the campaign to edit the sequence.</p>
             )}
-            <button
-              type="button"
-              className="secondary"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                api
-                  .getCampaignPreview(id)
-                  .then(setPreview)
-                  .catch((err: Error) => setError(err.message))
-                  .finally(() => setBusy(false));
-              }}
-            >
-              Load preview
-            </button>
-            {preview ? <pre className="code">{JSON.stringify(preview, null, 2)}</pre> : null}
           </div>
+          {review.exclusions?.length ? (
+            <p className="muted">Exclusions: {review.exclusions.slice(0, 8).join(" · ")}</p>
+          ) : null}
         </div>
       )}
 
-      {tab === "leads" && (
+      {tab === "recipients" && (
         <div className="stack">
+          <p className="muted">
+            {review?.pending_review
+              ? `${review.pending_review} people are waiting on the shortlist. Approve them before they can be enrolled.`
+              : "Enrolled people are the ones who will receive this sequence."}{" "}
+            <Link to={`/shortlist?campaign=${id}`}>Open shortlist</Link>
+          </p>
           <div className="row-actions" style={{ justifyContent: "flex-end" }}>
             <button
               type="button"
@@ -266,11 +366,32 @@ export default function CampaignDetailPage() {
                   .catch((err: Error) => setError(err.message));
               }}
             >
-              Export leads
+              Export enrolled
             </button>
           </div>
-          <LeadImport campaignId={id} onImported={() => void reload()} />
-          {Array.isArray(stats?.leads) && stats.leads.length > 0 ? (
+          <LeadImport campaignId={id} onImported={() => void reload()} destination="shortlist" />
+          {review?.recipients?.length ? (
+            <table>
+              <thead>
+                <tr>
+                  <th>Email</th>
+                  <th>Name</th>
+                  <th>Company</th>
+                  <th>Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {review.recipients.map((row) => (
+                  <tr key={row.email}>
+                    <td>{row.email}</td>
+                    <td>{row.first_name || "—"}</td>
+                    <td>{row.company || "—"}</td>
+                    <td>{row.source || "enrolled"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : Array.isArray(stats?.leads) && stats && stats.leads.length > 0 ? (
             <table>
               <thead>
                 <tr>
@@ -292,8 +413,30 @@ export default function CampaignDetailPage() {
               </tbody>
             </table>
           ) : (
-            <p className="muted">No leads on this campaign yet.</p>
+            <p className="muted">No enrolled recipients yet. Review the shortlist first.</p>
           )}
+        </div>
+      )}
+
+      {tab === "yaml" && (
+        <div className="card stack">
+          <p className="muted">
+            YAML is the same format the engine sends. The visual editor writes this subset. Variants stay here.
+          </p>
+          <label>
+            Sequence YAML
+            <textarea rows={18} value={yaml} onChange={(e) => setYaml(e.target.value)} readOnly={!editable} />
+          </label>
+          {editable ? (
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy || !yaml.trim()}
+              onClick={() => void run(() => api.patchCampaign(id, { sequence_yaml: yaml }))}
+            >
+              Save YAML
+            </button>
+          ) : null}
         </div>
       )}
     </div>
